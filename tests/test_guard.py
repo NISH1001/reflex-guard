@@ -132,3 +132,19 @@ def test_bad_construction(kwargs, err):
 async def test_bare_guard_has_no_model():
     with pytest.raises(NotImplementedError, match="must implement predict"):
         await Guard(categories=["a"]).aguard("x")
+
+
+def test_debug_is_off_by_default(logs):
+    g = fake()
+    assert g.debug is False
+    g.guard("x")
+    assert logs == []
+
+
+def test_debug_logs_questions_timing_and_scores(logs):
+    fake(mode=N | C, threshold=0.5, debug=True).guard("x")
+    text = "\n".join(logs)
+    assert "FakeGuard: 4 questions for 2 categories" in text
+    assert "predict took" in text
+    assert "violence score=0.900" in text
+    assert "flagged=True" in text

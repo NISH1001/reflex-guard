@@ -4,7 +4,9 @@ version = "0.1.0"
 description = "Multi-label guardrails on System One decision models (Laya, Von, Jev)"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "loguru>=0.7.3",
+]
 
 [project.optional-dependencies]
 laya = ["laya>=0.3.10"]

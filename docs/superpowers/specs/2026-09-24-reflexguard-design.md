@@ -36,14 +36,14 @@ Success: `LayaGuard` reproduces the per-category numbers of the reference notebo
 
 ## Package & tooling
 
-- Name `reflexguard`, `src/reflexguard/` layout, Python `>=3.12` (`.python-version` = 3.12).
+- Name `reflexguard`, flat `reflexguard/` package at the repo root, Python `>=3.12` (`.python-version` = 3.12).
   3.12 is required, not just preferred: on 3.10 `typing.Protocol` replaces an `__init__` defined
   on the protocol, which breaks the "concrete methods on the Protocol" pattern below.
-- Core has no runtime dependencies. Extra `reflexguard[laya]` pulls in `laya`.
+- Core runtime dependency: `loguru` (debug logs). Extra `reflexguard[laya]` pulls in `laya`.
 - Placeholder `main.py` is removed. Tests with `pytest` + `pytest-asyncio`.
 
 ```
-src/reflexguard/
+reflexguard/
   __init__.py     Guard, LayaGuard, VonGuard, JevGuard, Mode, GuardResult, CategoryResult
   modes.py        Mode, mode expression (| and &)
   questions.py    build_questions(categories, modes) -> questions dict
@@ -67,7 +67,7 @@ explicitly and so inherit its concrete methods; each one only writes `predict`.
 class Guard(Protocol):
     NOUL = Mode.NOUL; CHOICE = Mode.CHOICE; SCORE = Mode.SCORE
 
-    def __init__(self, categories, mode=Mode.NOUL, threshold=None, votes=None): ...
+    def __init__(self, categories, mode=Mode.NOUL, threshold=None, votes=None, debug=False): ...
 
     async def predict(self, context: str, questions: dict) -> dict:
         """Send questions to the model; return answers keyed by question id."""
@@ -83,6 +83,9 @@ class Guard(Protocol):
 - `threshold`: `None`, a float in [0, 1], or `dict[category, float]` (missing categories →
   `ValueError`).
 - `votes`: `None` or int; see Modes.
+- `debug`: when `True`, logs via `loguru` at DEBUG: question count and mode, `predict` latency,
+  each category's score and per-mode scores, the verdict, and (LayaGuard) router creation.
+  When `False` (default) reflexguard emits no log records.
 
 `aguard` flow:
 
@@ -151,7 +154,7 @@ class GuardResult:
 
 ## `LayaGuard`
 
-- `LayaGuard(..., router=None)`; `router` defaults to a lazily created, cached `laya.Router()`
+- `LayaGuard(..., debug=False, router=None)`; `router` defaults to a lazily created, cached `laya.Router()`
   (created on first `predict`, so construction is cheap).
 - `predict` runs `router.predict({"text": context}, questions)` via `asyncio.to_thread` and
   returns `result["answers"]` (kept on `GuardResult.raw`). One lock covers router creation and

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, ClassVar, Protocol, runtime_checkable
+
+from loguru import logger
 
 from .modes import Expr, Mode, with_votes
 from .questions import build_questions, mode_score, question_id
@@ -25,7 +28,9 @@ class Guard(Protocol):
         mode: Expr = Mode.NOUL,
         threshold: Threshold = None,
         votes: int | None = None,
+        debug: bool = False,
     ) -> None:
+        self.debug = debug
         self.categories = _normalize_categories(categories)
         if not isinstance(mode, Expr):
             raise TypeError(f"mode must be a Mode or a combination of modes, got {mode!r}")
@@ -43,7 +48,11 @@ class Guard(Protocol):
         if not context.strip():
             raise ValueError("context is empty")
         modes = self.mode.modes()
-        answers = await self.predict(context, build_questions(self.categories, modes))
+        questions = build_questions(self.categories, modes)
+        self._log("{} questions for {} categories, mode={!r}", len(questions), len(self.categories), self.mode)
+        t0 = time.perf_counter()
+        answers = await self.predict(context, questions)
+        self._log("predict took {:.1f} ms", (time.perf_counter() - t0) * 1000)
         results = []
         for name in self.categories:
             by_mode, raw = {}, {}
@@ -55,7 +64,15 @@ class Guard(Protocol):
                 by_mode[m.name] = mode_score(m, name, answers[qid])
             results.append(CategoryResult(name, self.mode.combine(by_mode), by_mode, raw))
         ranked = sorted(results, key=lambda c: c.score, reverse=True)
-        return GuardResult(ranked=ranked, raw=answers).at(self.threshold)
+        result = GuardResult(ranked=ranked, raw=answers).at(self.threshold)
+        for c in result.ranked:
+            self._log("{} score={:.3f} by_mode={}", c.name, c.score, c.by_mode)
+        self._log("flagged={} violations={}", result.flagged, [c.name for c in result.violations or []])
+        return result
+
+    def _log(self, message: str, *args: Any) -> None:
+        if self.debug:
+            logger.opt(depth=1).debug(f"{type(self).__name__}: {message}", *args)
 
     def guard(self, context: str) -> GuardResult:
         """Sync `aguard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""

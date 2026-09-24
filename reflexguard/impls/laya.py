@@ -21,9 +21,10 @@ class LayaGuard(Guard):
         mode: Expr = Mode.NOUL,
         threshold: Threshold = None,
         votes: int | None = None,
+        debug: bool = False,
         router: Any = None,
     ) -> None:
-        super().__init__(categories, mode, threshold, votes)
+        super().__init__(categories, mode, threshold, votes, debug)
         self._router = router
         self._lock = threading.Lock()
 
@@ -34,6 +35,7 @@ class LayaGuard(Guard):
         # One lock: the router is created once and calls into the model are serialized.
         with self._lock:
             if self._router is None:
+                self._log("creating Laya router")
                 self._router = _make_router()
             return self._router.predict({"text": context}, questions)["answers"]
 

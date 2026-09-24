@@ -25,6 +25,8 @@ res["violence"].by_mode   # {"noul": 0.87, "choice": 0.88, "score": 0.61}
 res.at(0.8)       # re-threshold without re-running the model
 ```
 
+Pass `debug=True` to log questions, latency and per-category scores through `loguru`.
+
 | mode | question per category | score |
 |---|---|---|
 | `NOUL` (default) | yes/no | P(yes) |
