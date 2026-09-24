@@ -1174,6 +1174,7 @@ laya = [
 [package.dev-dependencies]
 dev = [
     { name = "altair" },
+    { name = "laya" },
     { name = "marimo" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1189,6 +1190,7 @@ provides-extras = ["laya"]
 [package.metadata.requires-dev]
 dev = [
     { name = "altair", specifier = ">=6.3.0" },
+    { name = "laya", specifier = ">=0.3.10" },
     { name = "marimo", specifier = ">=0.24" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
