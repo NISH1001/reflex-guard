@@ -12,7 +12,12 @@ dependencies = [
 laya = ["laya>=0.3.10"]
 
 [dependency-groups]
-dev = ["marimo>=0.24", "pytest>=8", "pytest-asyncio>=0.24"]
+dev = [
+    "altair>=6.3.0",
+    "marimo>=0.24",
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+]
 
 [build-system]
 requires = ["hatchling"]

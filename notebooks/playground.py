@@ -8,12 +8,14 @@ app = marimo.App(width="medium")
 def _():
     import time
 
+    import altair as alt
     import marimo as mo
     from laya import Router
 
     from reflexguard import Guard, LayaGuard
+    from reflexguard.questions import SCORE_LEVELS
 
-    return Guard, LayaGuard, Router, mo, time
+    return Guard, LayaGuard, Router, SCORE_LEVELS, alt, mo, time
 
 
 @app.cell
@@ -22,8 +24,16 @@ def _(mo):
     # reflexguard playground
 
     Type some text, pick categories and modes, press **Run** (or Ctrl+Enter).
-    Every category gets its own score in [0, 1]. With several modes, `any` takes the highest
-    mode score, `all` the lowest, and `votes = k` the k-th highest.
+    Every category gets its own score in [0, 1] from each mode:
+
+    | mode | question per category | score | reads as |
+    |:---|:---|:---|:---|
+    | `noul` | yes/no | P(yes) | *does this harm apply?* |
+    | `choice` | `{category, not_category}` | P(category) | *which of the two fits better?* |
+    | `score` | severity: none, minor, serious, severe | expected level / 3 | *how severe is it?* (the weakest signal) |
+
+    With several modes, `any` takes the highest mode score, `all` the lowest, and `votes = k` the
+    k-th highest, so a category is flagged only when k modes agree.
     """)
     return
 
@@ -61,8 +71,8 @@ def _(mo):
         rows=7,
         full_width=True,
     )
-    modes = mo.ui.multiselect(options=["noul", "choice", "score"], value=["noul"], label="Modes")
-    combine = mo.ui.radio(options=["any", "all", "votes"], value="any", label="Combine modes", inline=True)
+    modes = mo.ui.multiselect(options=["noul", "choice", "score"], value=["noul", "choice", "score"], label="Modes")
+    combine = mo.ui.radio(options=["any", "all", "votes"], value="votes", label="Combine modes", inline=True)
     votes = mo.ui.slider(1, 3, value=2, label="votes (at least k modes)", show_value=True)
     use_threshold = mo.ui.checkbox(value=True, label="apply a threshold")
     threshold = mo.ui.slider(0.0, 1.0, step=0.05, value=0.5, label="threshold", show_value=True)
@@ -107,7 +117,7 @@ def _(Guard, categories, combine, mo, modes, votes):
         mode = (mode & _mode_of[_m]) if combine.value == "all" else (mode | _mode_of[_m])
     if combine.value == "votes" and len(picked) > 1:
         k = min(votes.value, len(picked))
-    return cats, k, mode
+    return cats, k, mode, picked
 
 
 @app.cell
@@ -129,7 +139,133 @@ async def _(LayaGuard, cats, k, mo, mode, router, run, text, threshold, time, us
 
 
 @app.cell
-def _(guard, latency_ms, mo, res):
+def _(SCORE_LEVELS, alt, guard, latency_ms, mo, picked, res):
+    BAR = "#2a78d6"  # single series: one hue
+    FLAG = "#d64545"  # categories at or over the threshold
+    MUTED = "#8a8a86"
+    INK = "#1f1f1d"  # dark text on the light end of the ramp
+    # Sequential blue, light -> dark: darker = more probability.
+    RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]
+    order = [c.name for c in res.ranked]  # highest combined score first, in every chart
+    cutoff = res.ranked[0].threshold  # None, or the (single) threshold
+
+    def _bars(rows, x_title, color=None, rule=None):
+        chart = (
+            alt.Chart(alt.Data(values=rows))
+            .mark_bar(cornerRadiusEnd=4)
+            .encode(
+                y=alt.Y("category:N", sort=order, title=None),
+                x=alt.X("p:Q", scale=alt.Scale(domain=[0, 1]), title=x_title),
+                color=color or alt.value(BAR),
+                tooltip=[alt.Tooltip("category:N"), alt.Tooltip("p:Q", format=".3f")],
+            )
+            .properties(width=520, height=max(120, 28 * len(rows)))
+        )
+        if rule is not None:
+            chart += (
+                alt.Chart(alt.Data(values=[{"t": rule}]))
+                .mark_rule(strokeDash=[4, 4], color=INK)
+                .encode(x="t:Q")
+            )
+        return chart
+
+    tabs = {}
+
+    # Combined score per category, flagged ones in red, threshold as a dashed line.
+    _rows = [
+        {"category": c.name, "p": c.score, "flagged": "flagged" if c.flagged else "not flagged"}
+        for c in res.ranked
+    ]
+    _color = (
+        alt.Color("flagged:N", scale=alt.Scale(domain=["flagged", "not flagged"], range=[FLAG, MUTED]), title=None)
+        if cutoff is not None
+        else None
+    )
+    tabs["combined"] = mo.vstack(
+        [
+            mo.md(f"Combined score with mode `{guard.mode!r}`. The dashed line is the threshold."),
+            _bars(_rows, "combined score", _color, cutoff),
+        ]
+    )
+
+    if "noul" in picked:
+        _rows = [{"category": c.name, "p": c.by_mode["noul"]} for c in res.ranked]
+        tabs["noul"] = mo.vstack(
+            [
+                mo.md("Independent P(yes) per category. Several can be high at once; they do **not** sum to 1."),
+                _bars(_rows, "P(yes)", rule=cutoff),
+            ]
+        )
+
+    if "choice" in picked:
+        _rows = [{"category": c.name, "p": c.by_mode["choice"]} for c in res.ranked]
+        tabs["choice"] = mo.vstack(
+            [
+                mo.md(
+                    "One two-option question per category, `{category, not_category}`, so this stays "
+                    "multi-label: each bar is P(category) against its own `not_` option."
+                ),
+                _bars(_rows, "P(category)", rule=cutoff),
+            ]
+        )
+
+    if "score" in picked:
+        _rows = [
+            {"category": c.name, "level": f"{i}: {lv}", "p": c.raw[f"score:{c.name}"]["probabilities"][str(i)]}
+            for c in res.ranked
+            for i, lv in enumerate(SCORE_LEVELS)
+        ]
+        _base = alt.Chart(alt.Data(values=_rows)).encode(
+            x=alt.X("level:N", sort=None, title=None, axis=alt.Axis(labelAngle=0, orient="top")),
+            y=alt.Y("category:N", sort=order, title=None),
+        )
+        _heat = (
+            _base.mark_rect(cornerRadius=4, stroke="white", strokeWidth=2).encode(
+                color=alt.Color("p:Q", scale=alt.Scale(domain=[0, 1], range=RAMP), title="P(level)"),
+                tooltip=[alt.Tooltip("category:N"), alt.Tooltip("level:N"), alt.Tooltip("p:Q", format=".3f")],
+            )
+            + _base.mark_text(fontSize=11).encode(
+                text=alt.Text("p:Q", format=".2f"),
+                color=alt.condition(alt.datum.p > 0.45, alt.value("white"), alt.value(INK)),
+            )
+        ).properties(width=110 * len(SCORE_LEVELS), height=max(120, 28 * len(res.ranked)))
+        _sev = [{"category": c.name, "p": c.by_mode["score"]} for c in res.ranked]
+        tabs["score"] = mo.vstack(
+            [
+                mo.md(
+                    "Each row is its own severity question and sums to 1. A single dark cell means the model "
+                    "is sure of the level; an even row means it isn't. Read the cells, not just the average."
+                ),
+                _heat,
+                mo.md("Expected level / 3 (the `score` mode's number):"),
+                _bars(_sev, "expected severity", rule=cutoff),
+            ]
+        )
+
+    def _shade(_row, col, value):
+        # Tint the score columns like a heatmap.
+        if col not in ("combined", *picked) or not isinstance(value, (int, float)):
+            return {}
+        step = min(int(value * len(RAMP)), len(RAMP) - 1)
+        return {"backgroundColor": RAMP[step], "color": "white" if step >= 4 else INK}
+
+    _table = [
+        {
+            "category": c.name,
+            "combined": round(c.score, 3),
+            **{m: round(c.by_mode[m], 3) for m in picked},
+            "flagged": "—" if c.flagged is None else ("yes" if c.flagged else "no"),
+        }
+        for c in res.ranked
+    ]
+    tabs["side by side"] = mo.vstack(
+        [
+            mo.md("One row per category, highest combined score first."),
+            mo.ui.table(_table, selection=None, pagination=False, show_data_types=False, style_cell=_shade),
+        ]
+    )
+    tabs["raw"] = res.raw
+
     if res.flagged is None:
         _verdict = mo.callout(mo.md("No threshold: categories are ranked only."), kind="neutral")
     elif res.flagged:
@@ -138,31 +274,14 @@ def _(guard, latency_ms, mo, res):
     else:
         _verdict = mo.callout(mo.md("**Clean**: nothing at or over the threshold."), kind="success")
 
-    _rows = [
-        {
-            "category": c.name,
-            "score": round(c.score, 3),
-            **{m: round(v, 3) for m, v in c.by_mode.items()},
-            "flagged": "—" if c.flagged is None else ("yes" if c.flagged else "no"),
-        }
-        for c in res.ranked
+    _stats = [
+        mo.stat(f"{c.score:.2f}", label=c.name.replace("_", " "), caption="combined score", bordered=True)
+        for c in res.ranked[:3]
     ]
-    mo.vstack(
-        [
-            _verdict,
-            mo.hstack(
-                [
-                    mo.stat(f"{res.top.score:.2f}", label=res.top.name, caption="top score", bordered=True),
-                    mo.stat(f"{latency_ms:.0f} ms", label="latency", caption=f"mode {guard.mode!r}", bordered=True),
-                ],
-                justify="start",
-                gap=1,
-            ),
-            mo.ui.table(_rows, selection=None, pagination=False, show_data_types=False),
-            mo.accordion({"raw answers": res.raw}),
-        ],
-        gap=1,
+    _stats.append(
+        mo.stat(f"{latency_ms:.0f} ms", label=f"{len(res.raw)} questions", caption="one model call", bordered=True)
     )
+    mo.vstack([_verdict, mo.hstack(_stats, justify="start", gap=1, wrap=True), mo.ui.tabs(tabs)], gap=1)
     return
 
 
