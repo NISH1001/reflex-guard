@@ -43,3 +43,9 @@ uv sync
 uv run pytest                 # unit tests, no model needed
 RUN_LAYA=1 uv run --extra laya pytest   # also runs the real Laya model
 ```
+
+Interactive playground (marimo is in the dev group):
+
+```bash
+uv run --extra laya marimo edit notebooks/playground.py
+```
