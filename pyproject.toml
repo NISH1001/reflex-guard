@@ -1,0 +1,21 @@
+[project]
+name = "reflexguard"
+version = "0.1.0"
+description = "Multi-label guardrails on System One decision models (Laya, Von, Jev)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+laya = ["laya>=0.3.10"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
