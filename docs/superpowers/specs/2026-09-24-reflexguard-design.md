@@ -30,7 +30,7 @@ Success: `LayaGuard` reproduces the per-category numbers of the reference notebo
 - In: `Guard` protocol, mode expressions, voting, result types, `LayaGuard`.
 - Stubbed: `VonGuard`, `JevGuard` exist and raise `NotImplementedError` from `predict`.
 - Also: `notebooks/playground.py`, an interactive marimo notebook over `LayaGuard`
-  (`uv run --extra laya --group notebook marimo edit notebooks/playground.py`).
+  (`uv run --extra laya marimo edit notebooks/playground.py`; marimo and altair are in the dev group).
 - Out (for now): prompt-template overrides, batching, weighted/mean ensembles, presets beyond a
   plain category list module, non-System-One guard models.
 
@@ -176,6 +176,8 @@ both using the same question schema.
 - Empty categories, bad threshold, bad `votes` → `ValueError` at construction.
 - An answer missing for a sent question id → `KeyError` naming the id.
 - Missing optional dependency → `ImportError` with install hint.
+- A non-finite (NaN/inf) model answer → `ValueError`; NaN would otherwise never be flagged.
+- A mode repeated in `|` / `&` counts once (`NOUL | NOUL | CHOICE` has two parts), so it cannot supply two votes.
 
 ## Testing
 

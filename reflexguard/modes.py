@@ -9,10 +9,10 @@ class Expr:
     """A mode or a combination of modes. Reduces per-mode scores to one score."""
 
     def __or__(self, other: Expr) -> AnyOf:
-        return AnyOf(_parts(self, AnyOf) + _parts(_check(other), AnyOf))
+        return AnyOf(_dedupe(_parts(self, AnyOf) + _parts(_check(other), AnyOf)))
 
     def __and__(self, other: Expr) -> AllOf:
-        return AllOf(_parts(self, AllOf) + _parts(_check(other), AllOf))
+        return AllOf(_dedupe(_parts(self, AllOf) + _parts(_check(other), AllOf)))
 
     def modes(self) -> tuple[Mode, ...]:
         """Every distinct mode in the expression, in first-seen order."""
@@ -90,6 +90,11 @@ def _parts(expr: Expr, kind: type) -> tuple[Expr, ...]:
     if isinstance(expr, kind) and getattr(expr, "k", 1) == 1:
         return expr.parts
     return (expr,)
+
+
+def _dedupe(parts: tuple[Expr, ...]) -> tuple[Expr, ...]:
+    # A repeated mode counts once, so NOUL | NOUL | CHOICE cannot give NOUL two votes.
+    return tuple(dict.fromkeys(parts))
 
 
 def _unique(parts: tuple[Expr, ...]) -> tuple[Mode, ...]:

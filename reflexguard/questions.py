@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 from .modes import Mode
@@ -55,4 +56,8 @@ def mode_score(mode: Mode, category: str, answer: dict[str, Any]) -> float:
         value = answer["score"] / (len(SCORE_LEVELS) - 1)
     else:
         raise ValueError(f"unknown mode {mode!r}")
-    return min(max(float(value), 0.0), 1.0)
+    value = float(value)
+    if not math.isfinite(value):
+        # NaN compares False against every threshold, which would silently pass the guard.
+        raise ValueError(f"non-finite {mode.name} answer for {category!r}: {value}")
+    return min(max(value, 0.0), 1.0)

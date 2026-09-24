@@ -48,3 +48,10 @@ def test_mode_score_extracts_each_answer_type():
 def test_mode_score_clamps_to_unit_interval():
     assert mode_score(Mode.NOUL, "v", {"noul": 1.2}) == 1.0
     assert mode_score(Mode.SCORE, "v", {"score": -0.1}) == 0.0
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_mode_score_rejects_non_finite(bad):
+    # a NaN would compare False against any threshold and silently pass the guard
+    with pytest.raises(ValueError, match="non-finite"):
+        mode_score(Mode.NOUL, "violence", {"noul": bad})

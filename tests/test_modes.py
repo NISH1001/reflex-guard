@@ -49,7 +49,16 @@ def test_votes_needs_or_group(expr):
 
 def test_duplicate_modes_are_listed_once():
     assert (N | N).modes() == (N,)
-    assert with_votes(N | N, 2).combine(SCORES) == 0.9
+    assert (N & N & C) == AllOf((N, C))
+
+
+def test_repeated_mode_gets_one_vote():
+    # NOUL alone must not satisfy "2 modes agree"
+    expr = with_votes(N | N | C, 2)
+    assert expr == AnyOf((N, C), 2)
+    assert expr.combine(SCORES) == 0.6
+    with pytest.raises(ValueError, match="votes must be"):
+        with_votes(N | N, 2)
 
 
 def test_combining_with_non_mode_raises():
