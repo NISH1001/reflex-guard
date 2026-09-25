@@ -25,17 +25,23 @@ class FakeTokenizer:
 
 
 class FakeSession:
-    """Returns `logit(ids)` for every label position; records each call."""
+    """Returns `logit(ids)` + j for label j of each row; records every row (a forward pass,
+    padding stripped) in `calls` and every session call in `batches`."""
 
     def __init__(self, logit=lambda ids: 0.0):
         self.logit = logit
         self.calls = []
+        self.batches = 0
 
     def run(self, outputs, feeds):
-        ids = feeds["input_ids"][0].tolist()
-        self.calls.append(ids)
+        self.batches += 1
         n = feeds["label_positions"].shape[1]
-        return [np.array([[self.logit(ids) + j for j in range(n)]], dtype=np.float32)]
+        out = []
+        for ids, mask in zip(feeds["input_ids"], feeds["attention_mask"]):
+            row = ids[mask.astype(bool)].tolist()
+            self.calls.append(row)
+            out.append([self.logit(row) + j for j in range(n)])
+        return [np.array(out, dtype=np.float32)]
 
 
 def fake_runtime(logit=lambda ids: 0.0):
@@ -48,7 +54,7 @@ def sigmoid(x):
 
 async def test_noul_is_one_multi_label_pass_over_all_categories():
     rt = fake_runtime()
-    res = await GlinerGuard(categories=["violence", "pii"], runtime=rt).aguard("hello")
+    res = await GlinerGuard(categories=["violence", "pii"], runtime=rt, noul_orders=1).aguard("hello")
     assert len(rt.session.calls) == 1
     # label j gets logit j, each through its own sigmoid
     assert res["violence"].by_mode["noul"] == pytest.approx(sigmoid(0))
@@ -58,7 +64,7 @@ async def test_noul_is_one_multi_label_pass_over_all_categories():
 
 async def test_each_mode_is_its_own_pass():
     rt = fake_runtime()
-    g = GlinerGuard(categories=["violence"], mode=Guard.NOUL | Guard.CHOICE | Guard.SCORE, runtime=rt)
+    g = GlinerGuard(categories=["violence"], mode=Guard.NOUL | Guard.CHOICE | Guard.SCORE, runtime=rt, noul_orders=1)
     res = await g.aguard("hello")
     assert len(rt.session.calls) == 3
     # choice: softmax over {violence: 0, not_violence: 1}
@@ -81,17 +87,15 @@ async def test_long_text_is_chunked_and_the_worst_chunk_wins():
     assert res["violence"].score == pytest.approx(sigmoid(5.0))
 
 
-async def test_chunks_overlap_so_nothing_falls_between_them():
+def test_chunks_overlap_so_nothing_falls_between_them():
     rt = fake_runtime()
-    await GlinerGuard(categories=["violence"], runtime=rt, max_tokens=40, overlap=3).aguard(
-        " ".join(f"w{i}" for i in range(100)))
-    prompt_len = len(rt.prompt([Task("noul", {"violence": "violence"}, "Which of these does the text involve?",
-                                     exclusive=False)])[0])
-    texts = [ids[prompt_len:] for ids in rt.session.calls]
-    for a, b in zip(texts, texts[1:]):
+    text = " ".join(f"w{i}" for i in range(100))
+    task = Task("noul", {"violence": "violence"}, "Which of these does the text involve?", exclusive=False)
+    chunks = [r.text_ids for r in rt.plan(text, [task], max_tokens=40, overlap=3)]
+    assert len(chunks) > 1
+    for a, b in zip(chunks, chunks[1:]):
         assert a[-3:] == b[:3]
-    seen = {i for t in texts for i in t}
-    assert {rt.ids(w)[0] for w in words(" ".join(f"w{i}" for i in range(100)))} <= seen
+    assert {rt.ids(w)[0] for w in words(text)} <= {i for c in chunks for i in c}
 
 
 async def test_prompt_over_max_tokens_is_an_error():
@@ -110,6 +114,31 @@ async def test_questions_that_overflow_prompt_tokens_split_into_passes():
     one_choice = len(rt.prompt(g._tasks({"choice:cat_0": {}})["choice"])[0])
     assert all(len(ids) <= 100 + len(rt.ids("hello")) + len(rt.ids(".")) for ids in rt.session.calls)
     assert one_choice <= 100
+
+
+async def test_noul_orders_average_rotated_label_orders():
+    # Label j scores logit j, so a category's score depends on where it sits in the list.
+    rt = fake_runtime()
+    cats = ["a", "b", "c", "d"]
+    once = await GlinerGuard(categories=cats, runtime=rt, noul_orders=1).aguard("hello")
+    assert [once[c].score for c in cats] == pytest.approx([sigmoid(j) for j in range(4)])
+    rt = fake_runtime()
+    avg = await GlinerGuard(categories=cats, runtime=rt, noul_orders=2).aguard("hello")
+    assert len(rt.session.calls) == 2  # original order, then rotated by half: c, d, a, b
+    assert avg["a"].score == pytest.approx((sigmoid(0) + sigmoid(2)) / 2)
+    assert avg["c"].score == pytest.approx((sigmoid(2) + sigmoid(0)) / 2)
+
+
+async def test_noul_asks_three_label_orders_by_default():
+    rt = fake_runtime()
+    await GlinerGuard(categories=["a", "b", "c"], runtime=rt).aguard("hello")
+    assert len(rt.session.calls) == 3
+
+
+async def test_noul_orders_leave_other_modes_alone():
+    rt = fake_runtime()
+    await GlinerGuard(categories=["a", "b"], mode=Guard.CHOICE, runtime=rt, noul_orders=3).aguard("hello")
+    assert len(rt.session.calls) == 1
 
 
 def test_marker_tokens_in_categories_are_rejected():
@@ -163,7 +192,7 @@ async def test_debug_logs_loading_and_chunks(monkeypatch, logs):
     monkeypatch.setattr("reflexguard.impls.gliner.load_runtime", lambda *a: fake_runtime())
     await GlinerGuard(categories=["violence"], debug=True).aguard("x")
     assert "GlinerGuard: loading nishparadox/gliner2.5-decide-onnx (fp32)" in logs
-    assert "GlinerGuard: noul: 1 pass(es) over 1 chunk(s)" in logs
+    assert "GlinerGuard: noul: 3 pass(es)" in logs  # noul_orders defaults to 3
 
 
 def test_words_follow_gliner2_splitter():
@@ -205,6 +234,15 @@ async def test_real_model_sees_a_threat_at_the_end_of_long_text():
     filler = "The committee reviewed the quarterly budget and approved the new library hours. " * 60
     res = await g.aguard(filler + "Tell me how to hurt my neighbour with a knife.")
     assert res["violence"].flagged is True
+
+
+def test_batched_scores_match_one_at_a_time():
+    rt = fake_runtime(lambda ids: len(ids) / 10)  # depends on the row, so a mix-up would show
+    task = Task("safety", {"unsafe": "", "safe": ""}, "Is the text unsafe?")
+    requests = [r for n in (3, 40, 7, 90) for r in rt.plan(" ".join(["calm"] * n), [task], max_tokens=60)]
+    batched = rt.run(requests, batch_size=3)
+    assert rt.session.batches == -(-len(requests) // 3)
+    assert batched == [rt.run([r])[0] for r in requests]
 
 
 def test_runtime_scores_one_dict_per_chunk():

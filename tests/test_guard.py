@@ -148,3 +148,11 @@ def test_debug_logs_questions_timing_and_scores(logs):
     assert "predict took" in text
     assert "violence score=0.900" in text
     assert "flagged=True" in text
+
+
+def test_version_matches_the_package_metadata():
+    from importlib.metadata import version
+
+    import reflexguard
+
+    assert reflexguard.__version__ == version("reflexguard") == "0.1.0"

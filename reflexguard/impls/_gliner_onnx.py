@@ -43,6 +43,15 @@ class Task:
         return out + [")", ")"]
 
 
+@dataclass(frozen=True)
+class Request:
+    """One forward pass: a prompt (ids, [L] positions), one chunk of text ids, and its tasks."""
+
+    prompt: tuple[list[int], list[int]]
+    text_ids: list[int]
+    tasks: list[Task]
+
+
 def words(text: str) -> list[str]:
     """gliner2's whitespace word splitter, after its trailing-punctuation rule."""
     if not text.endswith((".", "!", "?")):
@@ -92,8 +101,13 @@ class GlinerOnnx:
 
         The prompt and each chunk fit in `max_tokens` together; chunks share `overlap` words.
         """
+        return self.run(self.plan(text, tasks, max_tokens, overlap, label))
+
+    def plan(self, text: str, tasks: list[Task], max_tokens: int = 512, overlap: int = 32,
+             label: str = "task") -> list[Request]:
+        """One request per chunk of `text`, to pass to `run` (possibly with other plans)."""
         prompt = self.prompt(tasks)
-        return [self.probabilities(prompt, chunk, tasks)
+        return [Request(prompt, chunk, tasks)
                 for chunk in self.chunks(words(text), len(prompt[0]), max_tokens, overlap, label)]
 
     def chunks(self, text_words: list[str], prompt_len: int, max_tokens: int, overlap: int,
@@ -118,20 +132,45 @@ class GlinerOnnx:
 
     def probabilities(self, prompt: tuple[list[int], list[int]], text_ids: list[int],
                       tasks: list[Task]) -> dict[str, dict[str, float]]:
+        return self.run([Request(prompt, text_ids, tasks)])[0]
+
+    def run(self, requests: list[Request], batch_size: int = 8) -> list[dict[str, dict[str, float]]]:
+        """Score requests in padded batches; results come back in request order.
+
+        Requests are grouped by length so each batch pads little; padded positions are masked
+        out, so a request scores the same alone or batched.
+        """
         import numpy as np
 
-        prompt_ids, positions = prompt
-        ids = prompt_ids + text_ids
-        (logits,) = self.session.run(["logits"], {
-            "input_ids": np.asarray([ids], dtype=np.int64),
-            "attention_mask": np.ones((1, len(ids)), dtype=np.int64),
-            "label_positions": np.asarray([positions], dtype=np.int64),
-        })
-        flat = np.asarray(logits[0], dtype=np.float64)
-        out, start = {}, 0
-        for task in tasks:
-            x = flat[start:start + len(task.labels)]
-            start += len(task.labels)
-            p = np.exp(x - x.max()) / np.exp(x - x.max()).sum() if task.exclusive else 1 / (1 + np.exp(-x))
-            out[task.name] = dict(zip(task.labels, p.tolist()))
-        return out
+        order = sorted(range(len(requests)), key=lambda i: len(requests[i].prompt[0]) + len(requests[i].text_ids))
+        results: list[dict[str, dict[str, float]]] = [{} for _ in requests]
+        for start in range(0, len(order), batch_size):
+            batch = [requests[i] for i in order[start:start + batch_size]]
+            seqs = [r.prompt[0] + r.text_ids for r in batch]
+            width = max(map(len, seqs))
+            n_labels = max(len(r.prompt[1]) for r in batch)
+            ids = np.zeros((len(batch), width), dtype=np.int64)  # 0 is DeBERTa's pad id
+            mask = np.zeros((len(batch), width), dtype=np.int64)
+            positions = np.zeros((len(batch), n_labels), dtype=np.int64)
+            for row, (seq, r) in enumerate(zip(seqs, batch)):
+                ids[row, :len(seq)] = seq
+                mask[row, :len(seq)] = 1
+                positions[row, :len(r.prompt[1])] = r.prompt[1]
+            (logits,) = self.session.run(["logits"], {
+                "input_ids": ids, "attention_mask": mask, "label_positions": positions,
+            })
+            for row, i in enumerate(order[start:start + batch_size]):
+                results[i] = _probabilities(np.asarray(logits[row], dtype=np.float64), requests[i].tasks)
+        return results
+
+
+def _probabilities(flat: Any, tasks: list[Task]) -> dict[str, dict[str, float]]:
+    import numpy as np
+
+    out, start = {}, 0
+    for task in tasks:
+        x = flat[start:start + len(task.labels)]
+        start += len(task.labels)
+        p = np.exp(x - x.max()) / np.exp(x - x.max()).sum() if task.exclusive else 1 / (1 + np.exp(-x))
+        out[task.name] = dict(zip(task.labels, p.tolist()))
+    return out

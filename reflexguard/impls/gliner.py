@@ -22,9 +22,14 @@ class GlinerGuard(Guard):
     """Each mode is its own forward pass: sharing one prompt across modes blurs their scores.
 
     A mode whose questions would take more than `prompt_tokens` (default: half of `max_tokens`)
-    is split across several passes, leaving room for the text. Text longer than what is left of `max_tokens` is
-    split into overlapping chunks and each category keeps its highest-scoring chunk, so a
-    violation anywhere in the text is seen.
+    is split across several passes, leaving room for the text. Text longer than what is left of
+    `max_tokens` is split into overlapping chunks and each category keeps its highest-scoring
+    chunk, so a violation anywhere in the text is seen.
+
+    NOUL's multi-label question is sensitive to the order of its labels; `noul_orders=k` asks it
+    k times with the categories rotated and averages each category's score. `batch_size` pads
+    passes into one onnxruntime call, which pays off on GPU providers; on CPU a single pass
+    already uses every core, so the default is 1.
     """
 
     def __init__(
@@ -39,6 +44,8 @@ class GlinerGuard(Guard):
         max_tokens: int = 512,
         prompt_tokens: int | None = None,
         overlap: int = 32,
+        noul_orders: int = 3,
+        batch_size: int = 1,
         threads: int | None = None,
         runtime: GlinerOnnx | None = None,
     ) -> None:
@@ -46,10 +53,10 @@ class GlinerGuard(Guard):
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {sorted(PRECISIONS)}, got {precision!r}")
         prompt_tokens = max_tokens // 2 if prompt_tokens is None else prompt_tokens
-        if max_tokens < 1 or overlap < 0 or not 0 < prompt_tokens < max_tokens:
+        if max_tokens < 1 or overlap < 0 or batch_size < 1 or noul_orders < 1 or not 0 < prompt_tokens < max_tokens:
             raise ValueError(
-                f"need max_tokens >= 1, 0 < prompt_tokens < max_tokens and overlap >= 0, "
-                f"got {max_tokens}, {prompt_tokens} and {overlap}"
+                "need max_tokens >= 1, 0 < prompt_tokens < max_tokens, overlap >= 0, batch_size >= 1 and "
+                f"noul_orders >= 1, got {max_tokens}, {prompt_tokens}, {overlap}, {batch_size} and {noul_orders}"
             )
         for name, desc in self.categories.items():
             for marker in MARKERS:
@@ -57,6 +64,7 @@ class GlinerGuard(Guard):
                     raise ValueError(f"category {name!r} contains {marker!r}, a GLiNER marker token")
         self.model, self.precision, self.threads = model, precision, threads
         self.max_tokens, self.prompt_tokens, self.overlap = max_tokens, prompt_tokens, overlap
+        self.batch_size, self.noul_orders = batch_size, noul_orders
         self._runtime = runtime
         self._lock = threading.Lock()
 
@@ -69,18 +77,27 @@ class GlinerGuard(Guard):
             if self._runtime is None:
                 self._log("loading {} ({})", self.model, self.precision)
                 self._runtime = load_runtime(self.model, self.precision, self.threads)
-            answers: dict[str, Any] = {}
+            # Every pass of every mode goes through one batched run: modes never share a prompt,
+            # they only share the batch. A slot is one (question group, chunk) of a mode; NOUL's
+            # label orders fill the same slots, since rotating labels keeps the prompt length.
+            slots, requests = [], []
             for mode, tasks in self._tasks(questions).items():
-                groups = self._groups(tasks)
-                chunks = 0
-                for group in groups:
-                    per_chunk = self._runtime.scores(context, group, self.max_tokens, self.overlap, mode)
-                    chunks += len(per_chunk)
-                    for probs in per_chunk:
-                        for qid, answer in _answers(mode, probs).items():
-                            if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
-                                answers[qid] = answer
-                self._log("{}: {} pass(es) over {} chunk(s)", mode, len(groups), chunks)
+                orders = self.noul_orders if mode == Mode.NOUL.name else 1
+                for k in range(orders):
+                    rotated = [_rotate(t, k, orders) for t in tasks]
+                    planned = [r for group in self._groups(rotated)
+                               for r in self._runtime.plan(context, group, self.max_tokens, self.overlap, mode)]
+                    slots += [(mode, i) for i in range(len(planned))]
+                    requests += planned
+                self._log("{}: {} pass(es)", mode, sum(m == mode for m, _ in slots))
+            merged: dict[tuple[str, int], list[dict[str, dict[str, float]]]] = {}
+            for slot, probs in zip(slots, self._runtime.run(requests, self.batch_size)):
+                merged.setdefault(slot, []).append(probs)
+            answers: dict[str, Any] = {}
+            for (mode, _), per_order in merged.items():
+                for qid, answer in _answers(mode, _mean(per_order)).items():
+                    if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
+                        answers[qid] = answer
             return answers
 
     def _groups(self, tasks: list[Task]) -> list[list[Task]]:
@@ -118,6 +135,21 @@ class GlinerGuard(Guard):
             else:
                 raise ValueError(f"GlinerGuard does not support mode {mode!r}")
         return tasks
+
+
+def _rotate(task: Task, k: int, orders: int) -> Task:
+    """The task with its labels rotated by k/orders of their length (k = 0 leaves it as is)."""
+    labels = list(task.labels.items())
+    shift = k * len(labels) // orders
+    return Task(task.name, dict(labels[shift:] + labels[:shift]), task.instruction, task.exclusive)
+
+
+def _mean(per_order: list[dict[str, dict[str, float]]]) -> dict[str, dict[str, float]]:
+    """Average each task's label probabilities over the label orders it was asked in."""
+    if len(per_order) == 1:
+        return per_order[0]
+    return {task: {label: sum(p[task][label] for p in per_order) / len(per_order) for label in labels}
+            for task, labels in per_order[0].items()}
 
 
 def _text(name: str) -> str:
