@@ -2,12 +2,14 @@
 
     uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8
     uv run python scripts/eval.py report          # no model calls: reads the cache
+    uv run python scripts/eval.py plot            # figures from the same cache
 
 `run` asks each model one mode at a time and caches every prompt's per-category scores
 in data/eval/cache/<model>.jsonl, keyed by model, mode, category set and prompt, so a
 re-run only scores what is new. `report` combines the cached per-mode scores with
 reflexguard's own mode expressions (any / all / votes), picks each config's threshold on
 the dev split, and reports on the test split -> data/eval/results.md and results.csv.
+`plot` draws data/eval/figures/{overview,per_category}.png from the same numbers.
 """
 
 from __future__ import annotations
@@ -168,7 +170,8 @@ def evaluate(rows, categories, scores, lat, config, threshold):
     return out
 
 
-def report() -> None:
+def compute() -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
+    """Every cached model × config, thresholded on dev and measured on test."""
     rows, categories = load()
     dev = [r for r in rows if r["split"] == "dev"]
     test = [r for r in rows if r["split"] == "test"]
@@ -192,8 +195,13 @@ def report() -> None:
             t = best_threshold([(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in dev])
             results.append({"model": model, "config": config, "threshold": t,
                             "at_05": evaluate(test, categories, scores, lat, config, 0.5),
-                            "tuned": evaluate(test, categories, scores, lat, config, t)})
-    write_report(results, rows, test, categories)
+                            "tuned": evaluate(test, categories, scores, lat, config, t),
+                            "test_scores": [(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in test]})
+    return results, rows, test, categories
+
+
+def report() -> None:
+    write_report(*compute())
 
 
 def pct(x: float) -> str:
@@ -265,11 +273,16 @@ def main() -> None:
     r.add_argument("--models", required=True, help="comma-separated: laya, gliner:fp32, gliner:int8, gliner:fp16")
     r.add_argument("--limit", type=int, help="only the first N prompts (smoke test)")
     sub.add_parser("report", help="build results.md / results.csv from the cache")
+    sub.add_parser("plot", help="draw data/eval/figures/*.png from the cache")
     args = ap.parse_args()
     if args.cmd == "run":
         run([m.strip() for m in args.models.split(",") if m.strip()], args.limit)
-    else:
+    elif args.cmd == "report":
         report()
+    else:
+        from plot_eval import plot
+
+        plot(*compute())
 
 
 if __name__ == "__main__":
