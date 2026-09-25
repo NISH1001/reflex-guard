@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      # Unit tests use fake models; the light gliner extra is enough (no torch, no laya).
+      - run: uv sync --no-dev --extra gliner
+      - run: uv run --no-sync --with pytest --with pytest-asyncio pytest -q

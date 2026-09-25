@@ -54,8 +54,14 @@ to ~0.2) or `"fp16"` (for GPU). `model=` also takes a local folder with the same
 - NOUL asks one multi-label question over all categories; CHOICE and SCORE ask one question per category. Each mode
   is its own forward pass, since sharing one prompt across modes blurs their scores.
 - The encoder was trained on 512 tokens, and the prompt counts: about 15 tokens per category for NOUL, 50 for
-  CHOICE and 35 for SCORE (6 categories under CHOICE use 312). Longer text is split into overlapping chunks (`max_tokens=512`, `overlap=32` words) and each category keeps
+  CHOICE and 35 for SCORE. A mode whose questions would take more than `prompt_tokens` (default 256) is split across
+  passes. Longer text is split into overlapping chunks (`max_tokens=512`, `overlap=32` words) and each category keeps
   its highest-scoring chunk, so a violation anywhere in the text is seen.
+- NOUL's multi-label question is sensitive to label order (the first category's score is inflated on benign text).
+  `noul_orders=k` (default 3) asks it k times with the categories rotated and averages; each order is one more NOUL
+  pass. On the core eval set it lifts NOUL's AUC from 0.55 (1 order) to 0.68 (3).
+- `batch_size` pads passes into one onnxruntime call. On CPU one pass already uses every core, so batching does not
+  help there and the default is 1; it is for GPU providers.
 - `(` and `)` in descriptions become commas; GLiNER's marker tokens (`[P]`, `[L]`, ...) are rejected.
 
 `VonGuard` and `JevGuard` exist but raise `NotImplementedError` for now. To add a model, subclass
@@ -70,15 +76,19 @@ RUN_LAYA=1 uv run pytest   # also runs the real Laya model
 RUN_GLINER=1 uv run pytest   # also runs the real GLiNER model (downloads ~1.7 GB)
 ```
 
-Benchmark (models × modes × combinations on `data/eval/prompts.csv`; see `data/eval/README.md`):
+Benchmark (models × modes × combinations; results in [issue #1](https://github.com/NISH1001/reflex-guard/issues/1)):
 
 ```bash
-uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8   # scores only what isn't cached
-uv run python scripts/eval.py report                                      # -> data/eval/results.md, no model calls
+uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8:orders=3   # scores only what isn't cached
+uv run python scripts/eval.py report                                               # -> data/eval/results.md
+uv run python scripts/eval.py plot                                                 # -> data/eval/figures/
+uv run python scripts/eval.py --set ood run --models laya,gliner:fp32              # the public OOD set
 ```
 
-Scores are cached per model, mode and prompt in `data/eval/cache/`, and every combination (`any`, `all`,
-`votes=2`, ...) is computed from the cached per-mode scores, so adding a model is one `run`.
+Two sets: `core` (`data/eval`, 690 prompts, dev/test split; see `data/eval/README.md`) and `ood` (`data/eval/ood`,
+988 prompts from Aegis 2.0, XSTest and OR-Bench; never tuned on, it keeps each config's core-dev threshold). Scores
+are cached per model, mode and prompt, and every combination (`any`, `all`, `votes=2`, ...) and threshold is computed
+from the cache, so adding a model is one `run`. `report` and `plot` load no model.
 
 Interactive playground (laya, marimo and altair are in the dev group):
 
