@@ -70,6 +70,16 @@ RUN_LAYA=1 uv run pytest   # also runs the real Laya model
 RUN_GLINER=1 uv run pytest   # also runs the real GLiNER model (downloads ~1.7 GB)
 ```
 
+Benchmark (models × modes × combinations on `data/eval/prompts.csv`; see `data/eval/README.md`):
+
+```bash
+uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8   # scores only what isn't cached
+uv run python scripts/eval.py report                                      # -> data/eval/results.md, no model calls
+```
+
+Scores are cached per model, mode and prompt in `data/eval/cache/`, and every combination (`any`, `all`,
+`votes=2`, ...) is computed from the cached per-mode scores, so adding a model is one `run`.
+
 Interactive playground (laya, marimo and altair are in the dev group):
 
 ```bash
