@@ -86,6 +86,36 @@ class GlinerOnnx:
                 ids += self.ids(piece)
         return ids + self.ids("[SEP_TEXT]"), positions
 
+    def scores(self, text: str, tasks: list[Task], max_tokens: int = 512, overlap: int = 32,
+               label: str = "task") -> list[dict[str, dict[str, float]]]:
+        """Probabilities for every task and label, one dict per chunk of `text`.
+
+        The prompt and each chunk fit in `max_tokens` together; chunks share `overlap` words.
+        """
+        prompt = self.prompt(tasks)
+        return [self.probabilities(prompt, chunk, tasks)
+                for chunk in self.chunks(words(text), len(prompt[0]), max_tokens, overlap, label)]
+
+    def chunks(self, text_words: list[str], prompt_len: int, max_tokens: int, overlap: int,
+               label: str = "task") -> list[list[int]]:
+        budget = max_tokens - prompt_len
+        if budget < 1:
+            raise ValueError(
+                f"the {label} prompt alone is {prompt_len} tokens, over max_tokens={max_tokens}; "
+                "use fewer categories, shorter descriptions or a larger max_tokens"
+            )
+        word_ids = [self.ids(w) for w in text_words]
+        chunks, start = [], 0
+        while True:
+            end, size = start, 0
+            while end < len(word_ids) and (end == start or size + len(word_ids[end]) <= budget):
+                size += len(word_ids[end])
+                end += 1
+            chunks.append([i for w in word_ids[start:end] for i in w][:budget])
+            if end >= len(word_ids):
+                return chunks
+            start = max(end - overlap, start + 1)
+
     def probabilities(self, prompt: tuple[list[int], list[int]], text_ids: list[int],
                       tasks: list[Task]) -> dict[str, dict[str, float]]:
         import numpy as np

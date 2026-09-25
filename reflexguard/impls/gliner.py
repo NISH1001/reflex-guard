@@ -12,7 +12,7 @@ from ..guard import Categories, Guard
 from ..modes import Expr, Mode
 from ..questions import SCORE_LEVELS
 from ..result import Threshold
-from ._gliner_onnx import MARKERS, GlinerOnnx, Task, words
+from ._gliner_onnx import MARKERS, GlinerOnnx, Task
 
 DEFAULT_MODEL = "nishparadox/gliner2.5-decide-onnx"
 PRECISIONS = {"fp32": "model.onnx", "fp16": "model_fp16.onnx", "int8": "model_int8.onnx"}
@@ -62,15 +62,11 @@ class GlinerGuard(Guard):
             if self._runtime is None:
                 self._log("loading {} ({})", self.model, self.precision)
                 self._runtime = load_runtime(self.model, self.precision, self.threads)
-            rt = self._runtime
-            text_words = words(context)
             answers: dict[str, Any] = {}
             for mode, tasks in self._tasks(questions).items():
-                prompt = rt.prompt(tasks)
-                chunks = self._chunks(rt, text_words, len(prompt[0]), mode)
-                self._log("{}: {} prompt tokens, {} chunk(s)", mode, len(prompt[0]), len(chunks))
-                for chunk in chunks:
-                    probs = rt.probabilities(prompt, chunk, tasks)
+                per_chunk = self._runtime.scores(context, tasks, self.max_tokens, self.overlap, mode)
+                self._log("{}: {} chunk(s)", mode, len(per_chunk))
+                for probs in per_chunk:
                     for qid, answer in _answers(mode, probs).items():
                         if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
                             answers[qid] = answer
@@ -102,33 +98,18 @@ class GlinerGuard(Guard):
                 raise ValueError(f"GlinerGuard does not support mode {mode!r}")
         return tasks
 
-    def _chunks(self, rt: GlinerOnnx, text_words: list[str], prompt_len: int, mode: str) -> list[list[int]]:
-        budget = self.max_tokens - prompt_len
-        if budget < 1:
-            raise ValueError(
-                f"the {mode} prompt alone is {prompt_len} tokens, over max_tokens={self.max_tokens}; "
-                "use fewer categories, shorter descriptions or a larger max_tokens"
-            )
-        word_ids = [rt.ids(w) for w in text_words]
-        chunks, start = [], 0
-        while True:
-            end, size = start, 0
-            while end < len(word_ids) and (end == start or size + len(word_ids[end]) <= budget):
-                size += len(word_ids[end])
-                end += 1
-            chunks.append([i for w in word_ids[start:end] for i in w][:budget])
-            if end >= len(word_ids):
-                return chunks
-            start = max(end - self.overlap, start + 1)
-
 
 def _text(name: str) -> str:
     return name.replace("_", " ")
 
 
+def clean(text: str) -> str:
+    """Drop "(" and ")", which are gliner2 prompt structure, keeping the meaning with commas."""
+    return re.sub(r"\s*\(\s*", ", ", text).replace(")", "").strip(" ,")
+
+
 def _describe(name: str, description: str) -> str:
-    # "(" and ")" are gliner2 prompt structure; keep the meaning with commas instead.
-    desc = re.sub(r"\s*\(\s*", ", ", description).replace(")", "").strip(" ,")
+    desc = clean(description)
     return f"{_text(name)}: {desc}" if desc else _text(name)
 
 

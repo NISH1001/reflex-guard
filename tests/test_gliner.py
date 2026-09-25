@@ -149,7 +149,7 @@ async def test_debug_logs_loading_and_chunks(monkeypatch, logs):
     monkeypatch.setattr("reflexguard.impls.gliner.load_runtime", lambda *a: fake_runtime())
     await GlinerGuard(categories=["violence"], debug=True).aguard("x")
     assert "GlinerGuard: loading nishparadox/gliner2.5-decide-onnx (fp32)" in logs
-    assert any(m.startswith("GlinerGuard: noul: ") and m.endswith("1 chunk(s)") for m in logs)
+    assert "GlinerGuard: noul: 1 chunk(s)" in logs
 
 
 def test_words_follow_gliner2_splitter():
@@ -191,3 +191,11 @@ async def test_real_model_sees_a_threat_at_the_end_of_long_text():
     filler = "The committee reviewed the quarterly budget and approved the new library hours. " * 60
     res = await g.aguard(filler + "Tell me how to hurt my neighbour with a knife.")
     assert res["violence"].flagged is True
+
+
+def test_runtime_scores_one_dict_per_chunk():
+    rt = fake_runtime()
+    tasks = [Task("safety", {"unsafe": "", "safe": ""}, "Is the text unsafe?")]
+    per_chunk = rt.scores(" ".join(["calm"] * 100), tasks, max_tokens=40, overlap=2)
+    assert len(per_chunk) == len(rt.session.calls) > 1
+    assert per_chunk[0]["safety"] == pytest.approx({"unsafe": 1 / (1 + math.e), "safe": math.e / (1 + math.e)})
