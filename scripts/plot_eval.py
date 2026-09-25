@@ -13,9 +13,11 @@ import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 from matplotlib.lines import Line2D  # noqa: E402
 
-FIGURES = Path(__file__).resolve().parent.parent / "data" / "eval" / "figures"
-MODEL_NAMES = {"laya": "Laya", "gliner:fp32": "GLiNER fp32", "gliner:int8": "GLiNER int8", "gliner:fp16": "GLiNER fp16"}
-PALETTE = {"Laya": "#2a9d8f", "GLiNER fp32": "#e76f51", "GLiNER int8": "#f4a261", "GLiNER fp16": "#9c6644"}
+MODEL_NAMES = {"laya": "Laya", "gliner:fp32": "GLiNER fp32", "gliner:int8": "GLiNER int8", "gliner:fp16": "GLiNER fp16",
+               "gliner:fp32:orders=2": "GLiNER fp32 · 2 orders", "gliner:fp32:orders=3": "GLiNER fp32 · 3 orders",
+               "gliner:int8:orders=3": "GLiNER int8 · 3 orders"}
+PALETTE = {"Laya": "#2a9d8f", "GLiNER fp32": "#e9c46a", "GLiNER int8": "#f4a261", "GLiNER fp16": "#9c6644",
+           "GLiNER fp32 · 2 orders": "#b5179e", "GLiNER fp32 · 3 orders": "#e76f51", "GLiNER int8 · 3 orders": "#6a4c93"}
 MARKERS = {"noul": "o", "choice": "s", "score": "D", "any": "^", "all": "v", "votes=2": "P",
            "noul|choice": "X", "noul&choice": "*"}
 INK, MUTED = "#264653", "#8d99ae"
@@ -46,7 +48,7 @@ def frame(results: list[dict], test: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def overview(results: list[dict], test: list[dict]) -> Path:
+def overview(results: list[dict], test: list[dict], out: Path, set_name: str) -> Path:
     df = frame(results, test)
     models = [m for m in PALETTE if m in set(df["model"])]
     configs = [c for c in MARKERS if c in set(df["config"])]
@@ -60,14 +62,20 @@ def overview(results: list[dict], test: list[dict]) -> Path:
                     legend=False, zorder=3)
     # label each model's best trade-off (highest recall - FP), pushed clear of the cluster
     offsets = [(-95, 38), (40, 34), (30, -34), (-60, -40)]
+    labeled: set[tuple[float, float]] = set()
     for model, offset in zip(models, offsets):
         best = df[df.model == model].assign(gap=lambda d: d.recall - d.fp).nlargest(1, "gap").iloc[0]
+        if (best.fp, best.recall) in labeled:  # e.g. score is the same point with or without noul_orders
+            continue
+        labeled.add((best.fp, best.recall))
         ax_op.annotate(f"{model}: {best.config}", (best.fp, best.recall), xytext=offset, textcoords="offset points",
                        fontsize=9.5, color=PALETTE[model], fontweight="bold",
                        arrowprops={"arrowstyle": "-", "color": PALETTE[model], "linewidth": 1})
-    ax_op.set(xlim=(0, 0.5), ylim=(0.25, 0.9), xlabel="false-positive rate (benign + hard negatives)",
-              ylabel="harmful recall", title="A · Operating points (dev-tuned threshold)")
-    ax_op.text(0.012, 0.885, "better: up and to the left", fontsize=9, color=MUTED, va="top")
+    ax_op.set(xlim=(0, min(1.0, df.fp.max() + 0.08)), ylim=(max(0.0, df.recall.min() - 0.08), min(1.0, df.recall.max() + 0.08)),
+              xlabel="false-positive rate (benign + hard negatives)",
+              ylabel="harmful recall",
+              title="A · Operating points (" + ("dev-tuned threshold)" if set_name == "core" else "core-dev threshold)"))
+    ax_op.text(0.02, 0.98, "better: up and to the left", fontsize=9, color=MUTED, va="top", transform=ax_op.transAxes)
 
     # B. ROC of each model's best config by AUC, the rest faint
     for r in results:
@@ -112,18 +120,20 @@ def overview(results: list[dict], test: list[dict]) -> Path:
     fig.legend(handles=handles, loc="lower center", ncol=len(handles), frameon=False, fontsize=10,
                bbox_to_anchor=(0.5, -0.005))
     n = {k: sum(r["kind"] == k for r in test) for k in ("harmful", "benign", "hard_negative")}
-    fig.suptitle("reflexguard eval · GLiNER2.5-Decide vs Laya, every mode and combination", fontsize=16,
-                 fontweight="bold", color=INK, y=0.995)
-    fig.text(0.5, 0.962, f"test split: {len(test)} prompts ({n['harmful']} harmful, {n['benign']} benign, "
-             f"{n['hard_negative']} hard negatives) · thresholds tuned on dev", ha="center", fontsize=11, color=MUTED)
+    title = "every mode and combination" if set_name == "core" else "out-of-distribution public set"
+    how = "thresholds tuned on dev" if set_name == "core" else "thresholds carried over from the core set's dev split"
+    fig.suptitle(f"reflexguard eval · GLiNER2.5-Decide vs Laya · {title}", fontsize=16, fontweight="bold", color=INK,
+                 y=0.995)
+    fig.text(0.5, 0.962, f"{set_name} set: {len(test)} prompts ({n['harmful']} harmful, {n['benign']} benign, "
+             f"{n['hard_negative']} hard negatives) · {how}", ha="center", fontsize=11, color=MUTED)
     fig.tight_layout(rect=(0, 0.035, 1, 0.955))
-    path = FIGURES / "overview.png"
+    path = out / "overview.png"
     fig.savefig(path, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
 
-def per_category(results: list[dict], test: list[dict], categories: dict[str, str]) -> Path:
+def per_category(results: list[dict], test: list[dict], categories: dict[str, str], out: Path) -> Path:
     counts = {c: sum(c in r["labels"] for r in test) for c in categories}
     cols = [c for c in categories if counts[c]]
     data = pd.DataFrame(
@@ -141,16 +151,19 @@ def per_category(results: list[dict], test: list[dict], categories: dict[str, st
     ax.set(xlabel="", ylabel="")
     ax.tick_params(axis="x", rotation=0, labelsize=9)
     ax.tick_params(axis="y", labelsize=9)
-    ax.set_title("Per-category ROC-AUC (test) · each category's own score, labeled rows vs all non-harmful rows\n"
-                 "content categories have 3–8 test rows each: indicative only", fontsize=12, color=INK, loc="left")
+    thin = [c.replace("_", " ") for c in cols if counts[c] < 10]
+    note = f"fewer than 10 labeled rows (indicative only): {', '.join(thin)}" if thin else "every category has 10+ rows"
+    ax.set_title("Per-category ROC-AUC · each category's own score, labeled rows vs all non-harmful rows\n" + note,
+                 fontsize=12, color=INK, loc="left")
     fig.tight_layout()
-    path = FIGURES / "per_category.png"
+    path = out / "per_category.png"
     fig.savefig(path, dpi=160, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     return path
 
 
-def plot(results: list[dict], rows: list[dict], test: list[dict], categories: dict[str, str]) -> None:
-    FIGURES.mkdir(parents=True, exist_ok=True)
-    for path in (overview(results, test), per_category(results, test, categories)):
+def plot(results: list[dict], rows: list[dict], test: list[dict], categories: dict[str, str], out: Path,
+         name: str = "core") -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for path in (overview(results, test, out, set_name=name), per_category(results, test, categories, out)):
         print(f"wrote {path}")

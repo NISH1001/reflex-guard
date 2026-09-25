@@ -1,8 +1,12 @@
-"""Benchmark reflexguard models × modes × combinations on data/eval/prompts.csv.
+"""Benchmark reflexguard models × modes × combinations on an eval set.
 
     uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8
     uv run python scripts/eval.py report          # no model calls: reads the cache
     uv run python scripts/eval.py plot            # figures from the same cache
+    uv run python scripts/eval.py --set ood run --models laya,gliner:fp32   # the public OOD set
+
+Sets: `core` (data/eval, dev/test split) and `ood` (data/eval/ood, public datasets, all test).
+The ood set is never tuned on: each config keeps the threshold it was given on core's dev split.
 
 `run` asks each model one mode at a time and caches every prompt's per-category scores
 in data/eval/cache/<model>.jsonl, keyed by model, mode, category set and prompt, so a
@@ -27,8 +31,14 @@ from reflexguard import GlinerGuard, Guard, LayaGuard
 from reflexguard.modes import with_votes
 
 ROOT = Path(__file__).resolve().parent.parent
-DATA = ROOT / "data" / "eval"
+SETS = {"core": ROOT / "data" / "eval", "ood": ROOT / "data" / "eval" / "ood"}
+DATA = SETS["core"]
 CACHE = DATA / "cache"
+
+
+def use_set(name: str) -> None:
+    global DATA, CACHE
+    DATA, CACHE = SETS[name], SETS[name] / "cache"
 MODES = {"noul": Guard.NOUL, "choice": Guard.CHOICE, "score": Guard.SCORE}
 CONFIGS = {  # name -> (expression over the three modes, modes it needs)
     "noul": (Guard.NOUL, ["noul"]),
@@ -61,6 +71,24 @@ def read_cache(model: str) -> dict[str, dict]:
     return {e["key"]: e for e in map(json.loads, path.read_text().splitlines())}
 
 
+# Options a model spec may carry after its precision (gliner:fp32:orders=3), and the modes each
+# one changes: other modes are copied from the plain model's cache instead of re-scored.
+OPTIONS = {"orders": ("noul_orders", {"noul"})}
+
+
+def parse(model: str) -> tuple[str, dict[str, int]]:
+    """`gliner:fp32:orders=3` -> ("gliner:fp32", {"orders": 3})."""
+    name, *opts = model.split(":")
+    base = name if name == "laya" else f"{name}:{opts.pop(0) if opts else 'fp32'}"
+    options = {}
+    for opt in opts:
+        k, _, v = opt.partition("=")
+        if k not in OPTIONS:
+            raise SystemExit(f"unknown option {k!r} in {model!r}; known: {', '.join(OPTIONS)}")
+        options[k] = int(v)
+    return base, options
+
+
 def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
     if model == "laya":
         if "router" not in shared:
@@ -69,15 +97,18 @@ def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
             shared["router"] = Router()
             shared["router"].preload(["english"])
         return LayaGuard(categories=categories, mode=MODES[mode], router=shared["router"])
-    name, _, precision = model.partition(":")
+    base, options = parse(model)
+    name, _, precision = base.partition(":")
     if name != "gliner":
-        raise SystemExit(f"unknown model {model!r}; use laya or gliner:<fp32|int8|fp16>")
+        raise SystemExit(f"unknown model {model!r}; use laya or gliner:<fp32|int8|fp16>[:orders=k]")
     if "runtime" not in shared:
         from reflexguard.impls.gliner import load_runtime
 
-        shared["runtime"] = load_runtime(precision=precision or "fp32")
-    return GlinerGuard(categories=categories, mode=MODES[mode], precision=precision or "fp32",
-                       runtime=shared["runtime"])
+        shared["runtime"] = load_runtime(precision=precision)
+    # Explicit defaults, so a cached "gliner:fp32" keeps meaning what it meant when it was scored.
+    kwargs = {"noul_orders": 1} | {OPTIONS[k][0]: v for k, v in options.items()}
+    return GlinerGuard(categories=categories, mode=MODES[mode], precision=precision, runtime=shared["runtime"],
+                       **kwargs)
 
 
 def run(models: list[str], limit: int | None) -> None:
@@ -88,7 +119,20 @@ def run(models: list[str], limit: int | None) -> None:
         cache, shared = read_cache(model), {}
         path = CACHE / f"{model.replace(':', '_')}.jsonl"
         with open(path, "a") as out:
+            base, options = parse(model)
+            base_cache = read_cache(base) if options else {}
             for mode in MODES:
+                if options and not any(mode in OPTIONS[k][1] for k in options):
+                    copied = 0  # this mode ignores the options: reuse the plain model's scores
+                    for r in rows:
+                        k_new, k_base = key(model, mode, categories, r["prompt"]), key(base, mode, categories, r["prompt"])
+                        if k_new not in cache and k_base in base_cache:
+                            entry = base_cache[k_base] | {"key": k_new, "model": model}
+                            out.write(json.dumps(entry) + "\n")
+                            cache[k_new] = entry
+                            copied += 1
+                    if copied:
+                        print(f"{model} {mode}: {copied} copied from {base}", file=sys.stderr)
                 todo = [r for r in rows if key(model, mode, categories, r["prompt"]) not in cache]
                 print(f"{model} {mode}: {len(todo)} to score, {len(rows) - len(todo)} cached", file=sys.stderr)
                 if not todo:
@@ -170,12 +214,13 @@ def evaluate(rows, categories, scores, lat, config, threshold):
     return out
 
 
-def compute() -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
-    """Every cached model × config, thresholded on dev and measured on test."""
+def compute(thresholds: dict[tuple[str, str], float] | None = None,
+            ) -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
+    """Every cached model × config, thresholded on dev (or at `thresholds`) and measured on test."""
     rows, categories = load()
     dev = [r for r in rows if r["split"] == "dev"]
     test = [r for r in rows if r["split"] == "test"]
-    models = sorted(p.stem.replace("_", ":", 1) for p in CACHE.glob("*.jsonl"))
+    models = sorted(json.loads(p.open().readline())["model"] for p in CACHE.glob("*.jsonl"))
     results = []
     for model in models:
         cache = read_cache(model)
@@ -192,7 +237,13 @@ def compute() -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
                 continue
             scores = {r["id"]: {c: expr.combine({m: per_mode[m][r["id"]][c] for m in needs}) for c in categories}
                       for r in rows}
-            t = best_threshold([(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in dev])
+            if thresholds is None:
+                t = best_threshold([(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in dev])
+            elif (model, config) in thresholds:
+                t = thresholds[(model, config)]
+            else:
+                print(f"skip {model} {config}: no threshold from the core set", file=sys.stderr)
+                continue
             results.append({"model": model, "config": config, "threshold": t,
                             "at_05": evaluate(test, categories, scores, lat, config, 0.5),
                             "tuned": evaluate(test, categories, scores, lat, config, t),
@@ -200,25 +251,37 @@ def compute() -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
     return results, rows, test, categories
 
 
-def report() -> None:
-    write_report(*compute())
+def compute_set(name: str) -> tuple[list[dict], list[dict], list[dict], dict[str, str]]:
+    if name == "core":
+        use_set("core")
+        return compute()
+    use_set("core")
+    core = {(r["model"], r["config"]): r["threshold"] for r in compute()[0]}
+    use_set(name)
+    return compute(core)
+
+
+def report(name: str) -> None:
+    write_report(*compute_set(name), name=name)
 
 
 def pct(x: float) -> str:
     return f"{x:.1%}"
 
 
-def write_report(results, rows, test, categories) -> None:
+def write_report(results, rows, test, categories, name: str = "core") -> None:
     kinds = {k: sum(r["kind"] == k for r in test) for k in ("harmful", "benign", "hard_negative")}
+    how = ("Thresholds are picked on the dev split (best balanced accuracy) and applied to test."
+           if name == "core" else
+           "Nothing is tuned on this set: each config keeps the threshold it was given on the core set's dev split.")
     lines = [
-        "# reflexguard eval",
+        f"# reflexguard eval · {name} set",
         "",
         f"Test split: {len(test)} of {len(rows)} prompts ({kinds['harmful']} harmful, {kinds['benign']} benign, "
-        f"{kinds['hard_negative']} hard negatives). Thresholds are picked on the dev split (best balanced accuracy) "
-        "and applied to test. A prompt is flagged when any category's combined score reaches the threshold. "
-        "Latency is the median per prompt, summed over the modes a config needs (each mode is its own call).",
+        f"{kinds['hard_negative']} hard negatives). {how} A prompt is flagged when any category's combined score "
+        "reaches the threshold. Latency is the median per prompt, summed over the modes a config needs.",
         "",
-        "## Dev-tuned threshold",
+        "## Dev-tuned threshold" if name == "core" else "## Threshold from the core set's dev split",
         "",
         "| model | config | threshold | recall | benign FP | hard-negative FP | AUC | pairs told apart | latency |",
         "|---|---|---|---|---|---|---|---|---|",
@@ -268,21 +331,28 @@ def write_report(results, rows, test, categories) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--set", default="core", choices=sorted(SETS), help="eval set (default: core)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="score uncached prompts")
     r.add_argument("--models", required=True, help="comma-separated: laya, gliner:fp32, gliner:int8, gliner:fp16")
     r.add_argument("--limit", type=int, help="only the first N prompts (smoke test)")
     sub.add_parser("report", help="build results.md / results.csv from the cache")
-    sub.add_parser("plot", help="draw data/eval/figures/*.png from the cache")
+    pl = sub.add_parser("plot", help="draw data/eval/figures/*.png from the cache")
+    pl.add_argument("--models", default="laya,gliner:fp32,gliner:fp32:orders=3,gliner:int8:orders=3",
+                    help="comma-separated models to draw (default: the four the card compares)")
     args = ap.parse_args()
     if args.cmd == "run":
+        use_set(args.set)
         run([m.strip() for m in args.models.split(",") if m.strip()], args.limit)
     elif args.cmd == "report":
-        report()
+        report(args.set)
     else:
         from plot_eval import plot
 
-        plot(*compute())
+        results, rows, test, categories = compute_set(args.set)
+        keep = [m.strip() for m in args.models.split(",")]
+        results = sorted((r for r in results if r["model"] in keep), key=lambda r: keep.index(r["model"]))
+        plot(results, rows, test, categories, out=SETS[args.set] / "figures", name=args.set)
 
 
 if __name__ == "__main__":
