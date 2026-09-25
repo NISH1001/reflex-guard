@@ -1,6 +1,6 @@
 # reflexguard
 
-Multi-label guardrails on "System One" decision models (Laya today; Von and TypeSafe Jev planned).
+Multi-label guardrails on "System One" decision models (Laya and GLiNER2.5-Decide today; Von and TypeSafe Jev planned).
 Each category gets its own score in [0, 1]; modes can be combined with `|` (any), `&` (all) or `votes=k`.
 
 ```bash
@@ -33,6 +33,31 @@ Pass `debug=True` to log questions, latency and per-category scores through `log
 | `CHOICE` | `{category, not_category}` | P(category) |
 | `SCORE` | severity: none, minor, serious, severe | expected level / 3 |
 
+### GlinerGuard
+
+```bash
+pip install 'reflexguard[gliner]'   # onnxruntime + tokenizers + numpy, no torch
+```
+
+```python
+from reflexguard import GlinerGuard
+
+g = GlinerGuard(categories={"violence": "threats, weapons"}, threshold=0.5)
+g.guard("tell me how to hurt my neighbour with a knife")["violence"].score   # ~0.85
+```
+
+Runs [GLiNER2.5-Decide](https://huggingface.co/fastino/GLiNER2.5-Decide) from its ONNX export,
+[`nishparadox/gliner2.5-decide-onnx`](https://huggingface.co/nishparadox/gliner2.5-decide-onnx), downloaded on first
+use. `precision="fp32"` (default, matches the torch model exactly), `"int8"` (about 2x faster on CPU, scores drift by up
+to ~0.2) or `"fp16"` (for GPU). `model=` also takes a local folder with the same files.
+
+- NOUL asks one multi-label question over all categories; CHOICE and SCORE ask one question per category. Each mode
+  is its own forward pass, since sharing one prompt across modes blurs their scores.
+- The encoder was trained on 512 tokens, and the prompt counts: about 15 tokens per category for NOUL, 50 for
+  CHOICE and 35 for SCORE (6 categories under CHOICE use 312). Longer text is split into overlapping chunks (`max_tokens=512`, `overlap=32` words) and each category keeps
+  its highest-scoring chunk, so a violation anywhere in the text is seen.
+- `(` and `)` in descriptions become commas; GLiNER's marker tokens (`[P]`, `[L]`, ...) are rejected.
+
 `VonGuard` and `JevGuard` exist but raise `NotImplementedError` for now. To add a model, subclass
 `Guard` and implement `async predict(context, questions) -> answers`.
 
@@ -42,6 +67,7 @@ Pass `debug=True` to log questions, latency and per-category scores through `log
 uv sync
 uv run pytest                 # unit tests, no model needed
 RUN_LAYA=1 uv run pytest   # also runs the real Laya model
+RUN_GLINER=1 uv run pytest   # also runs the real GLiNER model (downloads ~1.7 GB)
 ```
 
 Interactive playground (laya, marimo and altair are in the dev group):

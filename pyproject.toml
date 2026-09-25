@@ -1,7 +1,7 @@
 [project]
 name = "reflexguard"
 version = "0.1.0"
-description = "Multi-label guardrails on System One decision models (Laya, Von, Jev)"
+description = "Multi-label guardrails on System One decision models (Laya, GLiNER, Von, Jev)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,14 +10,19 @@ dependencies = [
 
 [project.optional-dependencies]
 laya = ["laya>=0.3.10"]
+gliner = ["huggingface-hub>=0.25", "numpy>=1.26", "onnxruntime>=1.20", "tokenizers>=0.20"]
 
 [dependency-groups]
 dev = [
     "altair>=6.3.0",
+    "huggingface-hub>=0.25",
     "laya>=0.3.10",
     "marimo>=0.24",
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
     "pytest>=8",
     "pytest-asyncio>=0.24",
+    "tokenizers>=0.20",
 ]
 
 [build-system]
