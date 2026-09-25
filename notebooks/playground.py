@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.2"
+__generated_with = "0.25.0"
 app = marimo.App(width="medium")
 
 
@@ -12,10 +12,11 @@ def _():
     import marimo as mo
     from laya import Router
 
-    from reflexguard import Guard, LayaGuard
+    from reflexguard import GlinerGuard, Guard, LayaGuard
+    from reflexguard.impls.gliner import load_runtime
     from reflexguard.questions import SCORE_LEVELS
 
-    return Guard, LayaGuard, Router, SCORE_LEVELS, alt, mo, time
+    return GlinerGuard, Guard, LayaGuard, Router, SCORE_LEVELS, alt, load_runtime, mo, time
 
 
 @app.cell
@@ -34,17 +35,29 @@ def _(mo):
 
     With several modes, `any` takes the highest mode score, `all` the lowest, and `votes = k` the
     k-th highest, so a category is flagged only when k modes agree.
+
+    Two guards answer the same questions: **Laya** asks everything in one model call; **GLiNER**
+    (GLiNER2.5-Decide on ONNX) runs one pass per mode, and asks `noul` as a single multi-label
+    question over all categories. Each model loads on the first run that uses it, so the first
+    run with a guard is slow (GLiNER fp32 also downloads ~1.7 GB once).
     """)
     return
 
 
 @app.cell
-def _(Router, mo):
-    # One router for the whole session, so changing settings does not reload the model.
-    with mo.status.spinner("Loading the Laya checkpoint…"):
+def _(Router, load_runtime):
+    import functools
+
+    # Each model loads the first time a run needs it, then stays for the whole session,
+    # so switching guards or changing settings never reloads it.
+    @functools.cache
+    def laya_router():
         router = Router()
         router.preload(["english"])
-    return (router,)
+        return router
+
+    gliner_runtime = functools.cache(lambda precision: load_runtime(precision=precision))
+    return gliner_runtime, laya_router
 
 
 @app.cell
@@ -104,7 +117,21 @@ def _(mo):
     use_threshold = mo.ui.checkbox(value=True, label="apply a threshold")
     threshold = mo.ui.slider(0.0, 1.0, step=0.05, value=0.5, label="threshold", show_value=True)
     run = mo.ui.run_button(label="Run  (Ctrl+Enter)", kind="success", keyboard_shortcut="Ctrl-Enter")
-    return PRESETS, combine, example, modes, preset, run, threshold, use_threshold, votes
+    backend = mo.ui.radio(options=["laya", "gliner"], value="laya", label="Guard", inline=True)
+    precision = mo.ui.dropdown(options=["fp32", "int8", "fp16"], value="fp32", label="GLiNER precision")
+    return (
+        PRESETS,
+        backend,
+        combine,
+        example,
+        modes,
+        precision,
+        preset,
+        run,
+        threshold,
+        use_threshold,
+        votes,
+    )
 
 
 @app.cell
@@ -127,11 +154,26 @@ def _(example, mo):
 
 
 @app.cell
-def _(categories, combine, example, mo, modes, preset, run, text, threshold, use_threshold, votes):
+def _(
+    backend,
+    categories,
+    combine,
+    example,
+    mo,
+    modes,
+    precision,
+    preset,
+    run,
+    text,
+    threshold,
+    use_threshold,
+    votes,
+):
+    _guard_row = mo.hstack([backend, precision] if backend.value == "gliner" else [backend], justify="start", gap=1)
     mo.hstack(
         [
             mo.vstack([example, text, run], gap=1),
-            mo.vstack([preset, categories, modes, combine, votes, use_threshold, threshold], gap=0.5),
+            mo.vstack([_guard_row, preset, categories, modes, combine, votes, use_threshold, threshold], gap=0.5),
         ],
         widths=[3, 2],
         gap=2,
@@ -160,25 +202,45 @@ def _(Guard, categories, combine, mo, modes, votes):
 
 
 @app.cell
-async def _(LayaGuard, cats, k, mo, mode, router, run, text, threshold, time, use_threshold):
+async def _(
+    GlinerGuard,
+    LayaGuard,
+    backend,
+    cats,
+    gliner_runtime,
+    k,
+    laya_router,
+    mo,
+    mode,
+    precision,
+    run,
+    text,
+    threshold,
+    time,
+    use_threshold,
+):
     mo.stop(not run.value, mo.callout(mo.md("Press **Run** (or Ctrl+Enter) to guard the input."), kind="info"))
     mo.stop(not text.value.strip(), mo.callout(mo.md("Type some input text first."), kind="warn"))
 
-    guard = LayaGuard(
-        categories=cats,
-        mode=mode,
-        votes=k,
-        threshold=threshold.value if use_threshold.value else None,
-        router=router,
-    )
+    _settings = dict(categories=cats, mode=mode, votes=k, threshold=threshold.value if use_threshold.value else None)
+    if backend.value == "gliner":
+        with mo.status.spinner(f"Loading GLiNER ({precision.value})… the first time downloads the model"):
+            _rt = gliner_runtime(precision.value)
+        guard = GlinerGuard(**_settings, precision=precision.value, runtime=_rt)
+        backend_label = f"GLiNER {precision.value}"
+    else:
+        with mo.status.spinner("Loading the Laya checkpoint…"):
+            _router = laya_router()
+        guard = LayaGuard(**_settings, router=_router)
+        backend_label = "Laya"
     _t0 = time.perf_counter()
     res = await guard.aguard(text.value)
     latency_ms = (time.perf_counter() - _t0) * 1000
-    return guard, latency_ms, res
+    return backend_label, guard, latency_ms, res
 
 
 @app.cell
-def _(SCORE_LEVELS, alt, guard, latency_ms, mo, picked, res):
+def _(SCORE_LEVELS, alt, backend_label, guard, latency_ms, mo, picked, res):
     BAR = "#2a78d6"  # single series: one hue
     FLAG = "#d64545"  # categories at or over the threshold
     MUTED = "#8a8a86"
@@ -222,7 +284,7 @@ def _(SCORE_LEVELS, alt, guard, latency_ms, mo, picked, res):
     )
     tabs["combined"] = mo.vstack(
         [
-            mo.md(f"Combined score with mode `{guard.mode!r}`. The dashed line is the threshold."),
+            mo.md(f"{backend_label}: combined score with mode `{guard.mode!r}`. The dashed line is the threshold."),
             _bars(_rows, "combined score", _color, cutoff),
         ]
     )
@@ -231,7 +293,10 @@ def _(SCORE_LEVELS, alt, guard, latency_ms, mo, picked, res):
         _rows = [{"category": c.name, "p": c.by_mode["noul"]} for c in res.ranked]
         tabs["noul"] = mo.vstack(
             [
-                mo.md("Independent P(yes) per category. Several can be high at once; they do **not** sum to 1."),
+                mo.md(
+                    "Independent P(yes) per category. Several can be high at once; they do **not** sum to 1. "
+                    "(GLiNER: one multi-label question, one sigmoid per category.)"
+                ),
                 _bars(_rows, "P(yes)", rule=cutoff),
             ]
         )
@@ -318,7 +383,7 @@ def _(SCORE_LEVELS, alt, guard, latency_ms, mo, picked, res):
         for c in res.ranked[:3]
     ]
     _stats.append(
-        mo.stat(f"{latency_ms:.0f} ms", label=f"{len(res.raw)} questions", caption="one model call", bordered=True)
+        mo.stat(f"{latency_ms:.0f} ms", label=f"{len(res.raw)} questions", caption=backend_label, bordered=True)
     )
     mo.vstack([_verdict, mo.hstack(_stats, justify="start", gap=1, wrap=True), mo.ui.tabs(tabs)], gap=1)
     return
