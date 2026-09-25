@@ -21,8 +21,10 @@ PRECISIONS = {"fp32": "model.onnx", "fp16": "model_fp16.onnx", "int8": "model_in
 class GlinerGuard(Guard):
     """Each mode is its own forward pass: sharing one prompt across modes blurs their scores.
 
-    Text longer than `max_tokens` (prompt included) is split into overlapping chunks and each
-    category keeps its highest-scoring chunk, so a violation anywhere in the text is seen.
+    A mode whose questions would take more than `prompt_tokens` (default: half of `max_tokens`)
+    is split across several passes, leaving room for the text. Text longer than what is left of `max_tokens` is
+    split into overlapping chunks and each category keeps its highest-scoring chunk, so a
+    violation anywhere in the text is seen.
     """
 
     def __init__(
@@ -35,6 +37,7 @@ class GlinerGuard(Guard):
         model: str = DEFAULT_MODEL,
         precision: str = "fp32",
         max_tokens: int = 512,
+        prompt_tokens: int | None = None,
         overlap: int = 32,
         threads: int | None = None,
         runtime: GlinerOnnx | None = None,
@@ -42,14 +45,18 @@ class GlinerGuard(Guard):
         super().__init__(categories, mode, threshold, votes, debug)
         if precision not in PRECISIONS:
             raise ValueError(f"precision must be one of {sorted(PRECISIONS)}, got {precision!r}")
-        if max_tokens < 1 or overlap < 0:
-            raise ValueError(f"need max_tokens >= 1 and overlap >= 0, got {max_tokens} and {overlap}")
+        prompt_tokens = max_tokens // 2 if prompt_tokens is None else prompt_tokens
+        if max_tokens < 1 or overlap < 0 or not 0 < prompt_tokens < max_tokens:
+            raise ValueError(
+                f"need max_tokens >= 1, 0 < prompt_tokens < max_tokens and overlap >= 0, "
+                f"got {max_tokens}, {prompt_tokens} and {overlap}"
+            )
         for name, desc in self.categories.items():
             for marker in MARKERS:
                 if marker in name or marker in desc:
                     raise ValueError(f"category {name!r} contains {marker!r}, a GLiNER marker token")
         self.model, self.precision, self.threads = model, precision, threads
-        self.max_tokens, self.overlap = max_tokens, overlap
+        self.max_tokens, self.prompt_tokens, self.overlap = max_tokens, prompt_tokens, overlap
         self._runtime = runtime
         self._lock = threading.Lock()
 
@@ -64,13 +71,27 @@ class GlinerGuard(Guard):
                 self._runtime = load_runtime(self.model, self.precision, self.threads)
             answers: dict[str, Any] = {}
             for mode, tasks in self._tasks(questions).items():
-                per_chunk = self._runtime.scores(context, tasks, self.max_tokens, self.overlap, mode)
-                self._log("{}: {} chunk(s)", mode, len(per_chunk))
-                for probs in per_chunk:
-                    for qid, answer in _answers(mode, probs).items():
-                        if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
-                            answers[qid] = answer
+                groups = self._groups(tasks)
+                chunks = 0
+                for group in groups:
+                    per_chunk = self._runtime.scores(context, group, self.max_tokens, self.overlap, mode)
+                    chunks += len(per_chunk)
+                    for probs in per_chunk:
+                        for qid, answer in _answers(mode, probs).items():
+                            if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
+                                answers[qid] = answer
+                self._log("{}: {} pass(es) over {} chunk(s)", mode, len(groups), chunks)
             return answers
+
+    def _groups(self, tasks: list[Task]) -> list[list[Task]]:
+        """Pack tasks in order into passes whose prompt stays within `prompt_tokens`."""
+        groups: list[list[Task]] = []
+        for task in tasks:
+            if groups and len(self._runtime.prompt([*groups[-1], task])[0]) <= self.prompt_tokens:
+                groups[-1].append(task)
+            else:
+                groups.append([task])
+        return groups
 
     def _tasks(self, questions: dict[str, dict[str, Any]]) -> dict[str, list[Task]]:
         by_mode: dict[str, list[str]] = {}

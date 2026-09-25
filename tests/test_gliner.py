@@ -100,6 +100,18 @@ async def test_prompt_over_max_tokens_is_an_error():
         await g.aguard("hello")
 
 
+async def test_questions_that_overflow_prompt_tokens_split_into_passes():
+    rt = fake_runtime()
+    cats = {f"cat_{i}": "a fairly long description of this category" for i in range(10)}
+    g = GlinerGuard(categories=cats, mode=Guard.CHOICE, runtime=rt, prompt_tokens=100)
+    res = await g.aguard("hello")
+    assert len(rt.session.calls) > 1
+    assert len(res.ranked) == 10
+    one_choice = len(rt.prompt(g._tasks({"choice:cat_0": {}})["choice"])[0])
+    assert all(len(ids) <= 100 + len(rt.ids("hello")) + len(rt.ids(".")) for ids in rt.session.calls)
+    assert one_choice <= 100
+
+
 def test_marker_tokens_in_categories_are_rejected():
     with pytest.raises(ValueError, match=r"contains '\[L\]'"):
         GlinerGuard(categories={"violence": "see [L] here"}, runtime=fake_runtime())
@@ -117,6 +129,8 @@ def test_bad_precision_and_sizes():
         GlinerGuard(categories=["x"], precision="int4")
     with pytest.raises(ValueError, match="max_tokens"):
         GlinerGuard(categories=["x"], max_tokens=0)
+    with pytest.raises(ValueError, match="prompt_tokens"):
+        GlinerGuard(categories=["x"], max_tokens=512, prompt_tokens=512)
 
 
 async def test_runtime_loaded_once_under_concurrency(monkeypatch):
@@ -149,7 +163,7 @@ async def test_debug_logs_loading_and_chunks(monkeypatch, logs):
     monkeypatch.setattr("reflexguard.impls.gliner.load_runtime", lambda *a: fake_runtime())
     await GlinerGuard(categories=["violence"], debug=True).aguard("x")
     assert "GlinerGuard: loading nishparadox/gliner2.5-decide-onnx (fp32)" in logs
-    assert "GlinerGuard: noul: 1 chunk(s)" in logs
+    assert "GlinerGuard: noul: 1 pass(es) over 1 chunk(s)" in logs
 
 
 def test_words_follow_gliner2_splitter():
