@@ -44,6 +44,7 @@ def frame(results: list[dict], test: list[dict]) -> pd.DataFrame:
             "model": MODEL_NAMES.get(r["model"], r["model"]), "config": r["config"], "recall": m["recall"],
             "fp": (m["benign_fp"] * n_ben + m["hard_fp"] * n_hard) / (n_ben + n_hard),
             "auc": m["auc"], "twins": m["pairs"][0], "n_twins": m["pairs"][1], "latency": m["latency"],
+            "hard_fp": m["hard_fp"],
         })
     return pd.DataFrame(out)
 
@@ -92,16 +93,22 @@ def overview(results: list[dict], test: list[dict], out: Path, set_name: str) ->
                title="B · ROC, best config per model (others faint)")
     ax_roc.legend(loc="lower right", frameon=True, fontsize=9)
 
-    # C. twins told apart: harmful twin flagged and its benign twin passed
-    sns.barplot(data=df, x="config", y="twins", hue="model", palette=PALETTE, hue_order=models, order=configs,
-                ax=ax_twin, edgecolor="white", legend=False)
     n_twins = int(df["n_twins"].max())
-    ax_twin.axhline(n_twins, color=MUTED, linestyle=":", linewidth=1)
-    ax_twin.text(len(configs) - 0.5, n_twins, f" all {n_twins} pairs", va="bottom", ha="right", fontsize=9,
-                 color=MUTED)
-    ax_twin.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
-    ax_twin.set(ylim=(0, n_twins + 2), xlabel="", ylabel="twins told apart",
-                title="C · Harmful vs benign twins told apart")
+    if n_twins:  # C. twins told apart: harmful twin flagged and its benign twin passed
+        sns.barplot(data=df, x="config", y="twins", hue="model", palette=PALETTE, hue_order=models, order=configs,
+                    ax=ax_twin, edgecolor="white", legend=False)
+        ax_twin.axhline(n_twins, color=MUTED, linestyle=":", linewidth=1)
+        ax_twin.text(len(configs) - 0.5, n_twins, f" all {n_twins} pairs", va="bottom", ha="right", fontsize=9,
+                     color=MUTED)
+        ax_twin.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+        ax_twin.set(ylim=(0, n_twins + 2), xlabel="", ylabel="twins told apart",
+                    title="C · Harmful vs benign twins told apart")
+    else:  # no twins in this set: C. how much benign look-alike text gets blocked
+        sns.barplot(data=df, x="config", y="hard_fp", hue="model", palette=PALETTE, hue_order=models, order=configs,
+                    ax=ax_twin, edgecolor="white", legend=False)
+        ax_twin.yaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
+        ax_twin.set(ylim=(0, 1), xlabel="", ylabel="hard negatives flagged",
+                    title="C · False positives on benign look-alikes (lower is better)")
     ax_twin.tick_params(axis="x", rotation=25)
 
     # D. AUC vs latency
