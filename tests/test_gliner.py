@@ -251,3 +251,40 @@ def test_runtime_scores_one_dict_per_chunk():
     per_chunk = rt.scores(" ".join(["calm"] * 100), tasks, max_tokens=40, overlap=2)
     assert len(per_chunk) == len(rt.session.calls) > 1
     assert per_chunk[0]["safety"] == pytest.approx({"unsafe": 1 / (1 + math.e), "safe": math.e / (1 + math.e)})
+
+
+class CharTokenizer(FakeTokenizer):
+    """Like FakeTokenizer, but a piece with no spaces is one id per character (like CJK or base64)."""
+
+    def encode(self, piece, add_special_tokens=True):
+        if piece in self.vocab or " " in piece:
+            return super().encode(piece, add_special_tokens)
+        return SimpleNamespace(ids=[self.vocab.setdefault(ch, len(self.vocab) + 1) for ch in piece])
+
+
+def test_a_word_longer_than_a_chunk_is_split_not_truncated():
+    rt = GlinerOnnx(FakeSession(), CharTokenizer())
+    task = Task("noul", {"violence": "violence"}, "Which of these does the text involve?", exclusive=False)
+    blob = "".join(chr(0x4E00 + i) for i in range(900))  # 900 distinct CJK characters, no spaces
+    chunks = [r.text_ids for r in rt.plan(blob, [task], max_tokens=128, overlap=8)]
+    prompt_len = len(rt.prompt([task])[0])
+    assert all(len(c) <= 128 - prompt_len for c in chunks)
+    assert {rt.ids(ch)[0] for ch in blob} <= {i for c in chunks for i in c}  # every character is scored
+
+
+async def test_a_threat_at_the_end_of_an_unspaced_blob_is_seen():
+    tok = CharTokenizer()
+    rt = GlinerOnnx(FakeSession(), tok)
+    marker = tok.encode("ω").ids[0]  # lowercase: words() lowercases text, as gliner2 does
+    rt.session.logit = lambda ids: 5.0 if marker in ids else -5.0
+    res = await GlinerGuard(categories=["violence"], runtime=rt, max_tokens=128, noul_orders=1).aguard("x" * 2000 + "ω")
+    assert res["violence"].score == pytest.approx(sigmoid(5.0))
+
+
+async def test_too_many_chunks_raise_input_too_long():
+    from reflexguard import InputTooLong
+
+    g = GlinerGuard(categories=["violence"], runtime=fake_runtime(), max_tokens=64, max_chunks=3)
+    with pytest.raises(InputTooLong, match="max_chunks=3"):
+        await g.aguard(" ".join(["calm"] * 500))
+    assert issubclass(InputTooLong, ValueError)

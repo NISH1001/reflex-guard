@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ..chunking import windows
+
 MARKERS = ("[P]", "[L]", "[C]", "[E]", "[R]", "[DESCRIPTION]", "[EXAMPLE]", "[OUTPUT]", "[SEP_STRUCT]", "[SEP_TEXT]")
 
 _WORDS = re.compile(
@@ -118,14 +120,22 @@ class GlinerOnnx:
                 f"the {label} prompt alone is {prompt_len} tokens, over max_tokens={max_tokens}; "
                 "use fewer categories, shorter descriptions or a larger max_tokens"
             )
-        word_ids = [self.ids(w) for w in text_words]
+        # A "word" longer than the budget (CJK text, base64, a long URL) is split into overlapping
+        # token pieces, so no chunk is ever cut short and every token is scored.
+        word_ids: list[list[int]] = []
+        for w in text_words:
+            ids = self.ids(w)
+            if len(ids) <= budget:
+                word_ids.append(ids)
+            else:
+                word_ids += [ids[s:e] for s, e in windows(len(ids), budget, min(overlap, budget // 4))]
         chunks, start = [], 0
         while True:
             end, size = start, 0
             while end < len(word_ids) and (end == start or size + len(word_ids[end]) <= budget):
                 size += len(word_ids[end])
                 end += 1
-            chunks.append([i for w in word_ids[start:end] for i in w][:budget])
+            chunks.append([i for w in word_ids[start:end] for i in w])
             if end >= len(word_ids):
                 return chunks
             start = max(end - overlap, start + 1)

@@ -10,7 +10,8 @@ from typing import Any
 
 from ..guard import Categories, Guard
 from ..modes import Expr, Mode
-from ..questions import SCORE_LEVELS
+from ..chunking import check_chunks
+from ..questions import SCORE_LEVELS, strongest
 from ..result import Threshold
 from ._gliner_onnx import MARKERS, GlinerOnnx, Task
 
@@ -23,8 +24,10 @@ class GlinerGuard(Guard):
 
     A mode whose questions would take more than `prompt_tokens` (default: half of `max_tokens`)
     is split across several passes, leaving room for the text. Text longer than what is left of
-    `max_tokens` is split into overlapping chunks and each category keeps its highest-scoring
-    chunk, so a violation anywhere in the text is seen.
+    `max_tokens` is split into overlapping chunks (a single word longer than a chunk is split
+    too) and each category keeps its highest-scoring chunk, so a violation anywhere in the text
+    is seen. Needing more than `max_chunks` chunks raises `InputTooLong` instead of scoring part
+    of the text.
 
     NOUL's multi-label question is sensitive to the order of its labels; `noul_orders=k` asks it
     k times with the categories rotated and averages each category's score. `batch_size` pads
@@ -44,6 +47,7 @@ class GlinerGuard(Guard):
         max_tokens: int = 512,
         prompt_tokens: int | None = None,
         overlap: int = 32,
+        max_chunks: int | None = 64,
         noul_orders: int = 3,
         batch_size: int = 1,
         threads: int | None = None,
@@ -64,7 +68,7 @@ class GlinerGuard(Guard):
                     raise ValueError(f"category {name!r} contains {marker!r}, a GLiNER marker token")
         self.model, self.precision, self.threads = model, precision, threads
         self.max_tokens, self.prompt_tokens, self.overlap = max_tokens, prompt_tokens, overlap
-        self.batch_size, self.noul_orders = batch_size, noul_orders
+        self.batch_size, self.noul_orders, self.max_chunks = batch_size, noul_orders, max_chunks
         self._runtime = runtime
         self._lock = threading.Lock()
 
@@ -85,20 +89,18 @@ class GlinerGuard(Guard):
                 orders = self.noul_orders if mode == Mode.NOUL.name else 1
                 for k in range(orders):
                     rotated = [_rotate(t, k, orders) for t in tasks]
-                    planned = [r for group in self._groups(rotated)
-                               for r in self._runtime.plan(context, group, self.max_tokens, self.overlap, mode)]
+                    planned = []
+                    for group in self._groups(rotated):
+                        chunks = self._runtime.plan(context, group, self.max_tokens, self.overlap, mode)
+                        check_chunks(len(chunks), self.max_chunks, f"the text ({mode})")
+                        planned += chunks
                     slots += [(mode, i) for i in range(len(planned))]
                     requests += planned
                 self._log("{}: {} pass(es)", mode, sum(m == mode for m, _ in slots))
             merged: dict[tuple[str, int], list[dict[str, dict[str, float]]]] = {}
             for slot, probs in zip(slots, self._runtime.run(requests, self.batch_size)):
                 merged.setdefault(slot, []).append(probs)
-            answers: dict[str, Any] = {}
-            for (mode, _), per_order in merged.items():
-                for qid, answer in _answers(mode, _mean(per_order)).items():
-                    if qid not in answers or _key(mode, qid, answer) > _key(mode, qid, answers[qid]):
-                        answers[qid] = answer
-            return answers
+            return strongest([_answers(mode, _mean(per_order)) for (mode, _), per_order in merged.items()])
 
     def _groups(self, tasks: list[Task]) -> list[list[Task]]:
         """Pack tasks in order into passes whose prompt stays within `prompt_tokens`."""
@@ -178,15 +180,6 @@ def _answers(mode: str, probs: dict[str, dict[str, float]]) -> dict[str, dict[st
                "probabilities": {str(i): p[level] for i, level in enumerate(SCORE_LEVELS)}}
         for task, p in probs.items()
     }
-
-
-def _key(mode: str, qid: str, answer: dict[str, Any]) -> float:
-    """How strongly one chunk's answer points at the category; the strongest chunk wins."""
-    if mode == Mode.NOUL.name:
-        return answer["noul"]
-    if mode == Mode.CHOICE.name:
-        return answer["probabilities"][qid.partition(":")[2]]
-    return answer["score"]
 
 
 def load_runtime(model: str = DEFAULT_MODEL, precision: str = "fp32", threads: int | None = None) -> GlinerOnnx:

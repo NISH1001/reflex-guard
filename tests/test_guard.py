@@ -155,4 +155,4 @@ def test_version_matches_the_package_metadata():
 
     import reflexguard
 
-    assert reflexguard.__version__ == version("reflexguard") == "0.1.0"
+    assert reflexguard.__version__ == version("reflexguard") == "0.1.1"
