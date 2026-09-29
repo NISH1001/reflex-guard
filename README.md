@@ -64,6 +64,22 @@ to ~0.2) or `"fp16"` (for GPU). `model=` also takes a local folder with the same
   help there and the default is 1; it is for GPU providers.
 - `(` and `)` in descriptions become commas; GLiNER's marker tokens (`[P]`, `[L]`, ...) are rejected.
 
+### Long text
+
+Both guards score the whole text. Laya reads about 300 tokens at a time and GLiNER 512 minus its prompt, so longer
+text is split into overlapping chunks (by tokens, so text without spaces is covered too) and each category keeps
+its highest-scoring chunk. Text that would need more than `max_chunks` (default 64) chunks raises `InputTooLong`
+rather than being scored in part:
+
+```python
+from reflexguard import InputTooLong
+
+try:
+    res = g.guard(untrusted_text)
+except InputTooLong:
+    block()   # fail closed: an input too long to check is treated as unsafe
+```
+
 `VonGuard` and `JevGuard` exist but raise `NotImplementedError` for now. To add a model, subclass
 `Guard` and implement `async predict(context, questions) -> answers`.
 
