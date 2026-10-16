@@ -122,11 +122,13 @@ g = OpenAIDecisionGuard(categories={"violence": "threats, weapons"}, threshold=0
 g = OpenAIDecisionGuard(categories={"violence": "threats, weapons"}, via="openrouter")      # same model via OpenRouter
 ```
 
-Runs OpenAI's [Decisions API](https://developers.openai.com/api/reference/resources/decisions/methods/create)
-(`POST /v1/decisions`, GPT-6 Luna, public beta since 2026-10-06). `noul` is sent as a `predicate`, `choice` as a
+Runs OpenAI's Decisions API (`POST https://api.openai.com/v1/decisions`, GPT-6 Luna, in public beta; request and
+answer shapes follow the official `openai` SDK's `decisions` types). `noul` is sent as a `predicate`, `choice` as a
 `choice` and `score` as a `score` question, all in one request (OpenAI allows up to 200 questions; more are split).
-With `via="openrouter"` it defaults to the dated snapshot `openai/gpt-6-luna-decisions-20261006`. Chunking, retries,
-pinning and `usage` work as in `JevGuard`.
+With `via="openrouter"` it defaults to the dated snapshot `openai/gpt-6-luna-decisions-20261006`; OpenAI's own API
+offers no dated snapshot of `gpt-6-luna`, so results there can change when OpenAI updates the model. Chunking,
+retries, pinning and `usage` work as in `JevGuard`, except that OpenAI's native response has no cost field, so
+`usage["cost"]` stays 0 (input tokens are counted).
 
 The model may **refuse** a question. A guard must not read that as safe, so `on_refusal="flag"` (the default) scores
 a refused question 1.0 and marks it in `raw`; `"ignore"` scores it 0 and `"raise"` raises. `usage["refusals"]`
