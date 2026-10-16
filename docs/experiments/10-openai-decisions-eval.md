@@ -38,6 +38,9 @@ refused question 1.0 so a refusal never reads as safe. Prompts with at least one
 | core (690) | 0 | 23 | 12 |
 | ood (988) | 0 | 231 | 126 |
 
+Counted per mode across all splits. Unique prompts with any refused question: 25 core (8 of them in the test
+split) and 251 OOD (the OOD set is all test).
+
 Refusals fall on harmful prompts (most refused categories: illegal activity, violence, privacy). So its `choice` /
 `score` numbers, especially on the OOD set, partly measure the fail-closed policy; `noul` is unaffected. Each cache
 entry lists the refused categories, so results can be recomputed under `on_refusal="ignore"`.

@@ -14,7 +14,7 @@ pip install 'reflexguard[openai]'                   # OpenAIDecisionGuard  (need
 pip install 'reflexguard[laya,gliner,jev,openai]'   # all of them
 ```
 
-Not on PyPI yet: install from GitHub with `pip install 'reflexguard[jev] @ git+https://github.com/NISH1001/reflex-guard@v0.2.0'`.
+Not on PyPI yet: install from GitHub with `pip install 'reflexguard[jev] @ git+https://github.com/NISH1001/reflex-guard@v0.2.1'`.
 The bare package (`pip install reflexguard`) has no model backend; each guard tells you which extra it needs.
 
 ## Usage
