@@ -1,8 +1,11 @@
 # Changelog
 
-## 0.1.2
+## 0.2.0
 
 `JevGuard`, `OpenAIDecisionGuard`, an async-first interface, and how a long text's chunks become one result.
+
+**Breaking:** `guard()` is now async and `aguard()` is gone; sync callers use `guard_sync()`. (First tagged as
+v0.1.2 by mistake; a breaking change before 1.0 bumps the minor version.)
 
 - **Breaking: `guard()` is now async** (it was `aguard()`); the sync wrapper is `guard_sync()`. New
   `guard_many(texts, concurrency=None)` checks many texts concurrently, in input order. Its default is 2 for local
