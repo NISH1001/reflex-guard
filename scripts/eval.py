@@ -201,9 +201,9 @@ def score_rows(model: str, guard, rows: list[dict]):
             async with limit:
                 t0 = time.perf_counter()
                 res = await guard.guard(r["prompt"])
-                refused = sum(bool(a.get("refusal")) for c in res.ranked for a in c.raw.values())
-                return r, res, (time.perf_counter() - t0) * 1000, {"served": guard.model, "refusals": refused,
-                                                                   "date": time.strftime("%Y-%m-%d")}
+                refused = [c.name for c in res.ranked if any(a.get("refusal") for a in c.raw.values())]
+                return r, res, (time.perf_counter() - t0) * 1000, {"served": guard.model, "refusals": len(refused),
+                                                                   "refused": refused, "date": time.strftime("%Y-%m-%d")}
 
         limit = asyncio.Semaphore(REMOTE_CONCURRENCY[model])
         async with guard:  # one connection pool for the batch
