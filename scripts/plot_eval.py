@@ -143,7 +143,8 @@ def overview(results: list[dict], test: list[dict], out: Path, set_name: str) ->
         ax_op.scatter([_fp_rate(r) for r in rs], [r["tuned"]["recall"] for r in rs], s=26, color=STYLE[model][1],
                       marker=STYLE[model][3], edgecolor=INK, linewidth=0.5, zorder=3)
     how = "dev-tuned threshold" if set_name == "core" else "core-dev threshold"
-    ax_op.set(xlim=(0, 1), ylim=(0, 1), xlabel="false-positive rate (benign + hard negatives)",
+    fp_max = max(_fp_rate(r) for r in results if r["config"] in CONFIGS)
+    ax_op.set(xlim=(0, min(1.0, fp_max + 0.1)), ylim=(0, 1), xlabel="false-positive rate (benign + hard negatives)",
               ylabel="harmful recall", title=f"C · Recall vs false positives ({how})")
     ax_op.text(0.02, 0.97, "better: up and left", fontsize=6.5, color=MUTED, va="top", transform=ax_op.transAxes)
     _grid(ax_op, "both")
@@ -162,9 +163,10 @@ def overview(results: list[dict], test: list[dict], out: Path, set_name: str) ->
     for ax in (ax_auc, ax_c):
         ax.tick_params(axis="x", labelsize=6.5)
 
-    markers = [Line2D([], [], marker=STYLE[m][3], linestyle="", color=STYLE[m][1], markeredgecolor=INK,
-                      markersize=5, label=f"{STYLE[m][0]} (C)") for m in models]
-    _legend(fig, models, 1.05, extra=markers)
+    ax_op.legend(handles=[Line2D([], [], marker=STYLE[m][3], linestyle="", color=STYLE[m][1], markeredgecolor=INK,
+                                 markersize=5, label=STYLE[m][0]) for m in models],
+                 loc="lower right", frameon=False, fontsize=6.5, handletextpad=0.3)
+    _legend(fig, models, 1.05)
     title = "core set, test split" if set_name == "core" else "out-of-distribution set"
     fig.suptitle(f"reflexguard eval · {title} · {len(test)} prompts", y=1.09, fontsize=10, fontweight="bold")
     fig.tight_layout()
