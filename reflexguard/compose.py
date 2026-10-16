@@ -77,8 +77,6 @@ class Weighted:
         return self.cutoff
 
 
-RULES = {"any": AnyOf, "all": AllOf, "votes": Votes}
-
 
 def _labels(guards: Sequence[Guard]) -> list[str]:
     """Class names, numbered on repeats: LayaGuard, JevGuard, JevGuard#2."""
@@ -103,21 +101,14 @@ def _check(guards: Sequence[Guard], kind: str) -> None:
 class EnsembleGuard(Guard):
     """Run every member concurrently and combine their results per category with a `Rule`.
 
-    `rule` is a Rule (Votes(k), AnyOf(), AllOf(), Weighted(...), or your own object with `score` and
-    `threshold`) or a shortcut: "any", "all", "votes" (with `k`, default a majority). The built-in
+    `rule` is any `Rule`: the built-in `Votes(k)` (default: a majority), `AnyOf()`, `AllOf()`,
+    `Weighted(weights, cutoff)`, or your own object with `score` and `threshold`. The built-in
     rules vote on members' decisions, since models score on different scales, so members need a
     `threshold`. `by_mode` holds each member's own score, `raw` each member's CategoryResult, and
     re-thresholding the result (`res.at(...)`) moves the cut-off on the rule's score.
     """
 
-    def __init__(self, guards: Sequence[Guard], rule: str | Rule = "votes", k: int | None = None,
-                 debug: bool = False) -> None:
-        if isinstance(rule, str):
-            if rule not in RULES:
-                raise ValueError(f"rule must be one of {sorted(RULES)} or a Rule, got {rule!r}")
-            rule = Votes(k) if rule == "votes" else RULES[rule]()
-        elif k is not None:
-            raise ValueError("k only applies to rule='votes'; pass Votes(k) instead")
+    def __init__(self, guards: Sequence[Guard], rule: Rule = Votes(), debug: bool = False) -> None:
         if not isinstance(rule, Rule):
             raise TypeError(f"rule must be a Rule (an object with score() and threshold()), got {rule!r}")
         _check(guards, "EnsembleGuard")

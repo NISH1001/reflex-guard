@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from reflexguard import CascadeGuard, EnsembleGuard, Guard, InputTooLong
+from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Guard, InputTooLong, Rule, Votes, Weighted
 
 
 class Fixed(Guard):
@@ -21,21 +21,11 @@ class Fixed(Guard):
 
 
 # ── EnsembleGuard ──────────────────────────────────────────────────────────
-@pytest.mark.parametrize("rule, k, flagged", [("any", None, {"violence", "pii"}), ("all", None, set()),
-                                              ("votes", 2, {"violence"})])
-async def test_ensemble_rules_combine_member_decisions(rule, k, flagged):
-    a = Fixed({"violence": 0.9, "pii": 0.1})
-    b = Fixed({"violence": 0.8, "pii": 0.2})
-    c = Fixed({"violence": 0.1, "pii": 0.7})
-    res = await EnsembleGuard([a, b, c], rule=rule, k=k).guard("x")
-    assert {cat.name for cat in res.violations} == flagged
-
-
 async def test_ensemble_score_is_the_share_of_members_flagging():
     a = Fixed({"violence": 0.9, "pii": 0.1})
     b = Fixed({"violence": 0.8, "pii": 0.2})
     c = Fixed({"violence": 0.1, "pii": 0.7})
-    res = await EnsembleGuard([a, b, c], rule="votes", k=2).guard("x")
+    res = await EnsembleGuard([a, b, c], rule=Votes(2)).guard("x")
     assert res["violence"].score == pytest.approx(2 / 3) and res["violence"].threshold == pytest.approx(2 / 3)
     assert res["pii"].score == pytest.approx(1 / 3)
     assert res["violence"].by_mode == {"Fixed": 0.9, "Fixed#2": 0.8, "Fixed#3": 0.1}  # each member's own score
@@ -45,7 +35,7 @@ async def test_ensemble_score_is_the_share_of_members_flagging():
 
 async def test_ensemble_members_run_concurrently():
     members = [Fixed({"violence": 0.9}, delay=0.1) for _ in range(3)]
-    g = EnsembleGuard(members, rule="any")
+    g = EnsembleGuard(members, rule=AnyOf())
     loop = asyncio.get_running_loop()
     t0 = loop.time()
     await g.guard("x")
@@ -54,7 +44,7 @@ async def test_ensemble_members_run_concurrently():
 
 
 async def test_ensemble_works_with_guard_many_and_rethresholding():
-    g = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.2})], rule="all")
+    g = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.2})], rule=AllOf())
     results = await g.guard_many(["a", "b", "c"])
     assert len(results) == 3 and not results[0].flagged
     assert results[0].at(0.5).flagged  # half the members flag: passes a 0.5 cut-off
@@ -67,9 +57,9 @@ def test_ensemble_validates_its_members():
     with pytest.raises(ValueError, match="same categories"):
         EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"pii": 0.9})])
     with pytest.raises(ValueError, match="k"):
-        EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule="votes", k=3)
-    with pytest.raises(ValueError, match="rule"):
-        EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule="mean")
+        EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule=Votes(3))
+    with pytest.raises(TypeError, match="Rule"):
+        EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule="votes")
     with pytest.raises(ValueError, match="at least two"):
         EnsembleGuard([Fixed({"violence": 0.9})])
 
@@ -131,14 +121,13 @@ def test_cascade_validates():
 
 
 async def test_composites_nest():
-    ens = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.8})], rule="all")
+    ens = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.8})], rule=AllOf())
     broken = Fixed({"violence": 0.9}, error=RuntimeError("down"))
     res = await CascadeGuard([broken, ens]).guard("x")
     assert res.source == "EnsembleGuard" and res.flagged
 
 
 # ── rules ──────────────────────────────────────────────────────────────────
-from reflexguard.compose import AllOf, AnyOf, Rule, Votes, Weighted  # noqa: E402
 
 
 def three():
@@ -147,7 +136,7 @@ def three():
 
 @pytest.mark.parametrize("rule, flagged", [(AnyOf(), {"violence", "pii"}), (AllOf(), set()), (Votes(2), {"violence"}),
                                            (Votes(), {"violence"})])
-async def test_built_in_rules_match_the_string_shortcuts(rule, flagged):
+async def test_built_in_rules(rule, flagged):
     res = await EnsembleGuard(three(), rule=rule).guard("x")
     assert {c.name for c in res.violations} == flagged
 
@@ -179,7 +168,5 @@ async def test_a_custom_rule_is_any_object_with_score_and_threshold():
 def test_rule_validation():
     with pytest.raises(ValueError, match="k"):
         EnsembleGuard(three(), rule=Votes(4))
-    with pytest.raises(ValueError, match="k only applies"):
-        EnsembleGuard(three(), rule=AnyOf(), k=2)
     with pytest.raises(ValueError, match="weights"):
         EnsembleGuard(three(), rule=Weighted({"Fixed": 1}))
