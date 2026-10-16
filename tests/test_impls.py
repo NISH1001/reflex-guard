@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from reflexguard import Guard, JevGuard, LayaGuard, VonGuard
+from reflexguard import Guard, LayaGuard, VonGuard
 
 
 class FakeTokenizer:
@@ -109,7 +109,7 @@ async def test_laya_too_many_chunks_raise_input_too_long():
         await g.aguard(" ".join(["calm"] * 300))
 
 
-@pytest.mark.parametrize("cls", [VonGuard, JevGuard])
+@pytest.mark.parametrize("cls", [VonGuard])
 async def test_stubs_not_implemented(cls):
     g = cls(categories=["violence"])
     assert isinstance(g, Guard)

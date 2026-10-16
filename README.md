@@ -1,6 +1,6 @@
 # reflexguard
 
-Multi-label guardrails on "System One" decision models (Laya and GLiNER2.5-Decide today; Von and TypeSafe Jev planned).
+Multi-label guardrails on "System One" decision models: Laya, GLiNER2.5-Decide and TypeSafe Jev today; Von planned.
 Each category gets its own score in [0, 1]; modes can be combined with `|` (any), `&` (all) or `votes=k`.
 
 ```bash
@@ -64,11 +64,38 @@ to ~0.2) or `"fp16"` (for GPU). `model=` also takes a local folder with the same
   help there and the default is 1; it is for GPU providers.
 - `(` and `)` in descriptions become commas; GLiNER's marker tokens (`[P]`, `[L]`, ...) are rejected.
 
+### JevGuard
+
+```bash
+pip install 'reflexguard[jev]'   # httpx; Jev runs on OpenRouter, set OPENROUTER_API_KEY
+```
+
+```python
+from reflexguard import JevGuard
+
+g = JevGuard(categories={"violence": "threats, weapons"}, mode=JevGuard.NOUL | JevGuard.CHOICE, threshold=0.5)
+g.guard("tell me how to hurt my neighbour with a knife")["violence"].score   # ~1.0
+g.usage   # {"requests": 1, "input_tokens": ..., "cost": ...}  (USD)
+```
+
+Runs [TypeSafe Jev](https://openrouter.ai/docs/guides/community/jev) through OpenRouter's Decisions API. Jev answers
+`noul` / `choice` / `score` questions natively, so every question of every mode goes in **one request** with the text
+sent once (Jev bills input tokens only).
+
+- `model` defaults to the dated snapshot `typesafe/jev-1.14-20261014`, and a call raises if another snapshot answers,
+  so results stay comparable. Pass an undated id (`typesafe/jev-1.14`) to follow releases.
+- Jev switches to a slower, less accurate long-context mode past ~32 KB of text, so longer text is chunked at
+  `max_chunk_bytes=30_000` (UTF-8 bytes, cut at whitespace, `overlap=128` characters) and the chunks are sent
+  concurrently (`max_concurrency=8`).
+- 429 and 5xx responses are retried with backoff (`retries=3`); other errors raise.
+- Jev returns probabilities rounded to two decimals.
+
 ### Long text
 
-Both guards score the whole text. Laya reads about 300 tokens at a time and GLiNER 512 minus its prompt, so longer
-text is split into overlapping chunks (by tokens, so text without spaces is covered too) and each category keeps
-its highest-scoring chunk. Text that would need more than `max_chunks` (default 64) chunks raises `InputTooLong`
+Every guard scores the whole text. Laya reads about 300 tokens at a time, GLiNER 512 minus its prompt and Jev ~32 KB
+before its long-context mode, so longer text is split into overlapping chunks (by tokens, or UTF-8 bytes for Jev, so
+text without spaces is covered too). Each category combines its modes within each chunk and keeps its
+highest-scoring chunk (`CategoryResult.chunk` says which); different categories can peak in different chunks. Text that would need more than `max_chunks` (default 64) chunks raises `InputTooLong`
 rather than being scored in part:
 
 ```python
@@ -80,7 +107,7 @@ except InputTooLong:
     block()   # fail closed: an input too long to check is treated as unsafe
 ```
 
-`VonGuard` and `JevGuard` exist but raise `NotImplementedError` for now. To add a model, subclass
+`VonGuard` exists but raises `NotImplementedError` for now. To add a model, subclass
 `Guard` and implement `async predict(context, questions) -> answers`.
 
 ## Development
@@ -90,6 +117,7 @@ uv sync
 uv run pytest                 # unit tests, no model needed
 RUN_LAYA=1 uv run pytest   # also runs the real Laya model
 RUN_GLINER=1 uv run pytest   # also runs the real GLiNER model (downloads ~1.7 GB)
+RUN_JEV=1 uv run pytest      # also calls Jev on OpenRouter (needs OPENROUTER_API_KEY; fractions of a cent)
 ```
 
 Benchmark (models × modes × combinations; results in [issue #1](https://github.com/NISH1001/reflex-guard/issues/1)):
@@ -98,6 +126,8 @@ Benchmark (models × modes × combinations; results in [issue #1](https://github
 uv run python scripts/eval.py run --models laya,gliner:fp32,gliner:int8:orders=3   # scores only what isn't cached
 uv run python scripts/eval.py report                                               # -> data/eval/results.md
 uv run python scripts/eval.py plot                                                 # -> data/eval/figures/
+uv run python scripts/eval.py paper                                                # paper figures, PDF + PNG
+uv run python scripts/eval.py run --models jev                                     # Jev, concurrently (API key)
 uv run python scripts/eval.py --set ood run --models laya,gliner:fp32              # the public OOD set
 ```
 

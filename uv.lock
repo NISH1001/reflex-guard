@@ -1694,7 +1694,7 @@ wheels = [
 
 [[package]]
 name = "reflexguard"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 dependencies = [
     { name = "loguru" },
@@ -1707,6 +1707,9 @@ gliner = [
     { name = "onnxruntime" },
     { name = "tokenizers" },
 ]
+jev = [
+    { name = "httpx" },
+]
 laya = [
     { name = "laya" },
 ]
@@ -1714,6 +1717,7 @@ laya = [
 [package.dev-dependencies]
 dev = [
     { name = "altair" },
+    { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "laya" },
     { name = "marimo" },
@@ -1728,6 +1732,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "httpx", marker = "extra == 'jev'", specifier = ">=0.27" },
     { name = "huggingface-hub", marker = "extra == 'gliner'", specifier = ">=0.25" },
     { name = "laya", marker = "extra == 'laya'", specifier = ">=0.3.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -1735,11 +1740,12 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'gliner'", specifier = ">=1.20" },
     { name = "tokenizers", marker = "extra == 'gliner'", specifier = ">=0.20" },
 ]
-provides-extras = ["laya", "gliner"]
+provides-extras = ["laya", "gliner", "jev"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "altair", specifier = ">=6.3.0" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.25" },
     { name = "laya", specifier = ">=0.3.10" },
     { name = "marimo", specifier = ">=0.24" },
