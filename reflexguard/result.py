@@ -27,6 +27,7 @@ class GuardResult:
     ranked: list[CategoryResult]
     raw: dict[str, Any] = field(default_factory=dict)  # the answers behind each category's score
     chunks: int = 1  # how many chunks of the text were scored
+    source: str = ""  # the guard that produced this result (a CascadeGuard names the member that answered)
 
     @property
     def violations(self) -> list[CategoryResult] | None:

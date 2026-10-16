@@ -85,7 +85,8 @@ class Guard(Protocol):
             results.append(best)
         ranked = sorted(results, key=lambda c: c.score, reverse=True)
         raw = {qid: a for c in ranked for qid, a in c.raw.items()}
-        result = GuardResult(ranked=ranked, raw=raw, chunks=len(per_chunk)).at(self.threshold)
+        result = GuardResult(ranked=ranked, raw=raw, chunks=len(per_chunk),
+                             source=type(self).__name__).at(self.threshold)
         for c in result.ranked:
             self._log("{} score={:.3f} by_mode={}", c.name, c.score, c.by_mode)
         self._log("flagged={} violations={}", result.flagged, [c.name for c in result.violations or []])

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **`EnsembleGuard(guards, rule="votes", k=None)`**: runs every member concurrently and votes per category on their
+  decisions (`"any"`, `"all"`, or at least `k`; default a majority). A category's score is the share of members that
+  flag it; `by_mode` holds each member's own score and `raw` each member's result.
+- **`CascadeGuard(guards, uncertain=None)`**: tries members in order. A member that raises passes the text on (a
+  fallback); with `uncertain=(lo, hi)` so does one whose scores land in the band. The last member always answers.
+- `GuardResult.source`: the guard that produced a result (a cascade names the member that answered).
+
 ## 0.2.1
 
 - `JevGuard` / `OpenAIDecisionGuard`: `max_chunk_bytes` now bounds a request's text **and** questions together, so a

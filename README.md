@@ -51,6 +51,28 @@ results = await g.guard_many(["hello", "my email is jane@example.com"])   # conc
 | `CHOICE` | `{category, not_category}` | P(category) |
 | `SCORE` | severity: none, minor, serious, severe | expected level / 3 |
 
+### Combining guards
+
+```python
+from reflexguard import CascadeGuard, EnsembleGuard
+
+laya, jev, gliner = LayaGuard(categories, threshold=0.5), JevGuard(categories, threshold=0.5), GlinerGuard(categories, threshold=0.5)
+
+g = EnsembleGuard([laya, gliner, jev], rule="votes", k=2)    # all run concurrently; flag on 2 of 3 ("any" / "all" too)
+g = CascadeGuard([laya, jev], uncertain=(0.2, 0.8))          # Laya first; Jev only when a score lands in the band
+g = CascadeGuard([jev, laya])                                 # fallback: Laya answers if Jev errors or times out
+
+res = await g.guard(text)
+res.source                    # which guard answered (CascadeGuard) or "EnsembleGuard"
+res["violence"].by_mode       # EnsembleGuard: each member's own score
+```
+
+Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. An ensemble votes on its members'
+*decisions*, since models score on different scales: every member needs a `threshold`, and a category's ensemble
+score is the share of members that flag it. A cascade escalates when a member raises (API error, timeout,
+`InputTooLong`) or, with `uncertain=(lo, hi)`, when any category's score falls in that band; the last member always
+answers.
+
 ## Notes
 
 **All guards.** `guard` is async and `guard_sync` wraps it (it also works inside Jupyter or marimo). `debug=True` logs
