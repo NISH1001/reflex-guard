@@ -9,6 +9,7 @@
 - **`CascadeGuard(guards, uncertain=None)`**: tries members in order. A member that raises passes the text on (a
   fallback); with `uncertain=(lo, hi)` so does one whose scores land in the band. The last member always answers.
 - `GuardResult.source`: the guard that produced a result (a cascade names the member that answered).
+- Guards combine with `|` (an `AnyOf` ensemble) and `&` (`AllOf`); chains flatten (`a | b | c`), mixes nest.
 
 ## 0.2.1
 

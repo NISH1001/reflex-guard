@@ -58,6 +58,8 @@ from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Votes, Weight
 
 laya, jev, gliner = LayaGuard(categories, threshold=0.5), JevGuard(categories, threshold=0.5), GlinerGuard(categories, threshold=0.5)
 
+g = laya | jev                                               # EnsembleGuard, rule=AnyOf(): either flags
+g = laya & jev                                               # EnsembleGuard, rule=AllOf(): both flag
 g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))       # all run concurrently; flag on 2 of 3
 g = CascadeGuard([laya, jev], uncertain=(0.2, 0.8))          # Laya first; Jev only when a score lands in the band
 g = CascadeGuard([jev, laya])                                 # fallback: Laya answers if Jev errors or times out
@@ -67,7 +69,9 @@ res.source                    # which guard answered (CascadeGuard) or "Ensemble
 res["violence"].by_mode       # EnsembleGuard: each member's own score
 ```
 
-Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest.
+Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. `|` and `&` build ensembles directly:
+`a | b | c` is one `AnyOf` ensemble of three, `a | (b & c)` nests; rules with a parameter (`Votes`, `Weighted`) stay
+explicit.
 
 **EnsembleGuard** combines its members' results per category with a **`Rule`**, a `typing.Protocol` with two plain
 methods: `score(members) -> float` and `threshold(n) -> float`; a category is flagged when its score reaches the

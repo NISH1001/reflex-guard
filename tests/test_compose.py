@@ -170,3 +170,40 @@ def test_rule_validation():
         EnsembleGuard(three(), rule=Votes(4))
     with pytest.raises(ValueError, match="weights"):
         EnsembleGuard(three(), rule=Weighted({"Fixed": 1}))
+
+
+# ── operators ──────────────────────────────────────────────────────────────
+def test_or_builds_an_anyof_ensemble_and_and_an_allof_one():
+    a, b = Fixed({"violence": 0.9}), Fixed({"violence": 0.2})
+    g = a | b
+    assert isinstance(g, EnsembleGuard) and isinstance(g.rule, AnyOf) and g.guards == [a, b]
+    g = a & b
+    assert isinstance(g, EnsembleGuard) and isinstance(g.rule, AllOf) and g.guards == [a, b]
+
+
+def test_chains_flatten_and_mixes_nest():
+    a, b, c = Fixed({"violence": 0.9}), Fixed({"violence": 0.2}), Fixed({"violence": 0.6})
+    assert (a | b | c).guards == [a, b, c] and (a & b & c).guards == [a, b, c]
+    mixed = a | (b & c)
+    assert isinstance(mixed.rule, AnyOf) and mixed.guards[0] is a
+    inner = mixed.guards[1]
+    assert isinstance(inner.rule, AllOf) and inner.guards == [b, c]
+    assert isinstance((a | b) & c, EnsembleGuard) and ((a | b) & c).guards[1] is c  # & does not flatten an AnyOf
+
+
+async def test_operator_ensembles_decide_like_their_rules():
+    a, b = Fixed({"violence": 0.9}), Fixed({"violence": 0.2})
+    assert (await (a | b).guard("x")).flagged is True
+    assert (await (a & b).guard("x")).flagged is False
+
+
+def test_operators_reject_non_guards_and_members_without_thresholds():
+    a = Fixed({"violence": 0.9})
+    with pytest.raises(TypeError):
+        a | 3
+    with pytest.raises(ValueError, match="threshold"):
+        a | Fixed({"violence": 0.9}, threshold=None)
+
+
+def test_modes_still_combine_with_or():
+    assert Guard.NOUL | Guard.CHOICE  # the class-level Mode algebra is untouched

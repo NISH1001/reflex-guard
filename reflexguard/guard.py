@@ -109,6 +109,14 @@ class Guard(Protocol):
 
         return list(await asyncio.gather(*(one(c) for c in contexts)))
 
+    def __or__(self, other: object) -> Guard:
+        """`a | b`: an EnsembleGuard that flags when any member does (AnyOf); chains flatten."""
+        return _combine(self, other, any_of=True)
+
+    def __and__(self, other: object) -> Guard:
+        """`a & b`: an EnsembleGuard that flags only when every member does (AllOf); chains flatten."""
+        return _combine(self, other, any_of=False)
+
     def guard_sync(self, context: str) -> GuardResult:
         """Sync `guard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""
         try:
@@ -117,6 +125,19 @@ class Guard(Protocol):
             return asyncio.run(self.guard(context))
         with ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, self.guard(context)).result()
+
+
+def _combine(left: Guard, right: object, any_of: bool) -> Guard:
+    if not isinstance(right, Guard):
+        return NotImplemented
+    from .compose import AllOf, AnyOf, EnsembleGuard  # compose imports this module
+
+    rule = AnyOf if any_of else AllOf
+
+    def members(g: Guard) -> list[Guard]:  # a | b | c is one ensemble, a | (b & c) nests
+        return list(g.guards) if isinstance(g, EnsembleGuard) and type(g.rule) is rule else [g]
+
+    return EnsembleGuard(members(left) + members(right), rule=rule())
 
 
 def _normalize_categories(categories: Categories) -> dict[str, str]:
