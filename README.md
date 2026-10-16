@@ -67,9 +67,22 @@ res.source                    # which guard answered (CascadeGuard) or "Ensemble
 res["violence"].by_mode       # EnsembleGuard: each member's own score
 ```
 
-Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. An ensemble votes on its members'
-*decisions*, since models score on different scales: every member needs a `threshold`, and a category's ensemble
-score is the share of members that flag it. A cascade escalates when a member raises (API error, timeout,
+Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. An ensemble combines its members' results
+per category with a **rule**: `"any"`, `"all"`, `"votes"` (+ `k`) are shortcuts for `Any()`, `All()`, `Votes(k)`, and
+`Weighted({"JevGuard": 2, ...}, cutoff=0.5)` weighs members. The built-ins vote on members' *decisions*, since models
+score on different scales, so every member needs a `threshold`. A rule is any object with two plain methods:
+
+```python
+class LayaMustAgree:
+    def score(self, members):          # {"LayaGuard": CategoryResult, "JevGuard": CategoryResult, ...}
+        laya, *others = members.values()
+        return float(laya.flagged and any(m.flagged for m in others))
+
+    def threshold(self, n):            # the category is flagged when score >= threshold(number of members)
+        return 1.0
+
+EnsembleGuard([laya, gliner, jev], rule=LayaMustAgree())
+``` A cascade escalates when a member raises (API error, timeout,
 `InputTooLong`) or, with `uncertain=(lo, hi)`, when any category's score falls in that band; the last member always
 answers.
 

@@ -2,9 +2,10 @@
 
 ## Unreleased
 
-- **`EnsembleGuard(guards, rule="votes", k=None)`**: runs every member concurrently and votes per category on their
-  decisions (`"any"`, `"all"`, or at least `k`; default a majority). A category's score is the share of members that
-  flag it; `by_mode` holds each member's own score and `raw` each member's result.
+- **`EnsembleGuard(guards, rule="votes", k=None)`**: runs every member concurrently and combines their results per
+  category with a `Rule`: `Votes(k)` (default a majority), `Any()`, `All()`, `Weighted(weights, cutoff)`, or any object
+  with `score(members) -> float` and `threshold(n) -> float`. Strings `"any"` / `"all"` / `"votes"` are shortcuts.
+  `by_mode` holds each member's own score and `raw` each member's result.
 - **`CascadeGuard(guards, uncertain=None)`**: tries members in order. A member that raises passes the text on (a
   fallback); with `uncertain=(lo, hi)` so does one whose scores land in the band. The last member always answers.
 - `GuardResult.source`: the guard that produced a result (a cascade names the member that answered).

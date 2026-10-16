@@ -3,7 +3,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .chunking import InputTooLong
-from .compose import CascadeGuard, EnsembleGuard
+from .compose import CascadeGuard, EnsembleGuard, Rule
 from .guard import Guard
 from .impls import GlinerGuard, JevGuard, LayaGuard, OpenAIDecisionGuard, VonGuard
 from .modes import Mode
@@ -14,4 +14,4 @@ try:
 except PackageNotFoundError:  # running from a source tree that was never installed
     __version__ = "0.0.0+unknown"
 
-__all__ = ["CascadeGuard", "CategoryResult", "EnsembleGuard", "GlinerGuard", "Guard", "GuardResult", "InputTooLong", "JevGuard", "LayaGuard", "Mode", "OpenAIDecisionGuard", "VonGuard", "__version__"]
+__all__ = ["CascadeGuard", "CategoryResult", "EnsembleGuard", "GlinerGuard", "Guard", "GuardResult", "InputTooLong", "JevGuard", "LayaGuard", "Mode", "OpenAIDecisionGuard", "Rule", "VonGuard", "__version__"]

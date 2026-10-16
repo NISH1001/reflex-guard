@@ -135,3 +135,51 @@ async def test_composites_nest():
     broken = Fixed({"violence": 0.9}, error=RuntimeError("down"))
     res = await CascadeGuard([broken, ens]).guard("x")
     assert res.source == "EnsembleGuard" and res.flagged
+
+
+# ── rules ──────────────────────────────────────────────────────────────────
+from reflexguard.compose import All, Any, Rule, Votes, Weighted  # noqa: E402
+
+
+def three():
+    return [Fixed({"violence": 0.9, "pii": 0.1}), Fixed({"violence": 0.8, "pii": 0.2}), Fixed({"violence": 0.1, "pii": 0.7})]
+
+
+@pytest.mark.parametrize("rule, flagged", [(Any(), {"violence", "pii"}), (All(), set()), (Votes(2), {"violence"}),
+                                           (Votes(), {"violence"})])
+async def test_built_in_rules_match_the_string_shortcuts(rule, flagged):
+    res = await EnsembleGuard(three(), rule=rule).guard("x")
+    assert {c.name for c in res.violations} == flagged
+
+
+async def test_weighted_rule():
+    # the third member alone carries more weight than the first two together
+    rule = Weighted({"Fixed": 1, "Fixed#2": 1, "Fixed#3": 3}, cutoff=0.5)
+    res = await EnsembleGuard(three(), rule=rule).guard("x")
+    assert {c.name for c in res.violations} == {"pii"}
+    assert res["pii"].score == pytest.approx(3 / 5)
+
+
+async def test_a_custom_rule_is_any_object_with_score_and_threshold():
+    class FirstMustAgree:
+        """Flag only when the first member flags and at least one other does."""
+
+        def score(self, members):
+            first, *rest = members.values()
+            return float(bool(first.flagged) and any(m.flagged for m in rest))
+
+        def threshold(self, n):
+            return 1.0
+
+    assert isinstance(FirstMustAgree(), Rule)
+    res = await EnsembleGuard(three(), rule=FirstMustAgree()).guard("x")
+    assert {c.name for c in res.violations} == {"violence"}
+
+
+def test_rule_validation():
+    with pytest.raises(ValueError, match="k"):
+        EnsembleGuard(three(), rule=Votes(4))
+    with pytest.raises(ValueError, match="k only applies"):
+        EnsembleGuard(three(), rule=Any(), k=2)
+    with pytest.raises(ValueError, match="weights"):
+        EnsembleGuard(three(), rule=Weighted({"Fixed": 1}))

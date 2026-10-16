@@ -3,13 +3,81 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
-from typing import Sequence
+from dataclasses import dataclass, replace
+from typing import Mapping, Protocol, Sequence, runtime_checkable
 
 from .guard import Guard
 from .result import CategoryResult, GuardResult
 
-RULES = ("any", "all", "votes")
+
+# ── ensemble rules ─────────────────────────────────────────────────────────
+@runtime_checkable
+class Rule(Protocol):
+    """How an EnsembleGuard turns its members' results for one category into one score.
+
+    `members` maps each member's label (LayaGuard, JevGuard, JevGuard#2, ...) to its
+    CategoryResult for that category (`.score`, `.flagged`, `.threshold`, `.by_mode`). The
+    category is flagged when `score(members) >= threshold(n)`, n being the number of members.
+    """
+
+    def score(self, members: Mapping[str, CategoryResult]) -> float: ...
+
+    def threshold(self, n: int) -> float: ...
+
+
+def _flag_share(members: Mapping[str, CategoryResult]) -> float:
+    return sum(bool(c.flagged) for c in members.values()) / len(members)
+
+
+@dataclass(frozen=True)
+class Votes:
+    """Flag when at least `k` members flag (default: a majority). Score: the share flagging."""
+
+    k: int | None = None
+
+    def score(self, members: Mapping[str, CategoryResult]) -> float:
+        return _flag_share(members)
+
+    def threshold(self, n: int) -> float:
+        k = n // 2 + 1 if self.k is None else self.k
+        if not 1 <= k <= n:
+            raise ValueError(f"k must be between 1 and {n}, got {k}")
+        return k / n
+
+
+class Any(Votes):
+    """Flag when any member flags."""
+
+    def threshold(self, n: int) -> float:
+        return 1 / n
+
+
+class All(Votes):
+    """Flag only when every member flags."""
+
+    def threshold(self, n: int) -> float:
+        return 1.0
+
+
+@dataclass(frozen=True)
+class Weighted:
+    """Flag when the flagging members carry at least `cutoff` of the total weight."""
+
+    weights: Mapping[str, float]
+    cutoff: float = 0.5
+
+    def score(self, members: Mapping[str, CategoryResult]) -> float:
+        missing = set(members) - set(self.weights)
+        if missing:
+            raise ValueError(f"Weighted weights must name every member; missing {sorted(missing)}")
+        total = sum(self.weights[label] for label in members)
+        return sum(self.weights[label] for label, c in members.items() if c.flagged) / total
+
+    def threshold(self, n: int) -> float:
+        return self.cutoff
+
+
+RULES = {"any": Any, "all": All, "votes": Votes}
 
 
 def _labels(guards: Sequence[Guard]) -> list[str]:
@@ -33,28 +101,35 @@ def _check(guards: Sequence[Guard], kind: str) -> None:
 
 
 class EnsembleGuard(Guard):
-    """Run every member concurrently and vote per category.
+    """Run every member concurrently and combine their results per category with a `Rule`.
 
-    Members score on different scales, so the ensemble combines their decisions: each member
-    needs a `threshold`, and a category's ensemble score is the share of members that flag it.
-    `rule="any"` flags when one member does, `"all"` when every member does, `"votes"` when at
-    least `k` do (default: a majority). `by_mode` holds each member's own score, `raw` each
-    member's `CategoryResult`. Re-thresholding the result (`res.at(0.5)`) changes the vote share.
+    `rule` is a Rule (Votes(k), Any(), All(), Weighted(...), or your own object with `score` and
+    `threshold`) or a shortcut: "any", "all", "votes" (with `k`, default a majority). The built-in
+    rules vote on members' decisions, since models score on different scales, so members need a
+    `threshold`. `by_mode` holds each member's own score, `raw` each member's CategoryResult, and
+    re-thresholding the result (`res.at(...)`) moves the cut-off on the rule's score.
     """
 
-    def __init__(self, guards: Sequence[Guard], rule: str = "votes", k: int | None = None, debug: bool = False) -> None:
-        if rule not in RULES:
-            raise ValueError(f"rule must be one of {RULES}, got {rule!r}")
+    def __init__(self, guards: Sequence[Guard], rule: str | Rule = "votes", k: int | None = None,
+                 debug: bool = False) -> None:
+        if isinstance(rule, str):
+            if rule not in RULES:
+                raise ValueError(f"rule must be one of {sorted(RULES)} or a Rule, got {rule!r}")
+            rule = Votes(k) if rule == "votes" else RULES[rule]()
+        elif k is not None:
+            raise ValueError("k only applies to rule='votes'; pass Votes(k) instead")
+        if not isinstance(rule, Rule):
+            raise TypeError(f"rule must be a Rule (an object with score() and threshold()), got {rule!r}")
         _check(guards, "EnsembleGuard")
-        missing = [label for label, g in zip(_labels(guards), guards) if g.threshold is None]
-        if missing:
-            raise ValueError(f"EnsembleGuard members need a threshold (it votes on their decisions): {missing}")
-        n = len(guards)
-        k = {"any": 1, "all": n}.get(rule, n // 2 + 1 if k is None else k)
-        if not 1 <= k <= n:
-            raise ValueError(f"k must be between 1 and {n}, got {k}")
-        super().__init__(categories=dict(guards[0].categories), threshold=k / n, debug=debug)
-        self.guards, self.labels, self.rule, self.k = list(guards), _labels(guards), rule, k
+        labels = _labels(guards)
+        if isinstance(rule, Votes | Weighted):
+            missing = [label for label, g in zip(labels, guards) if g.threshold is None]
+            if missing:
+                raise ValueError(f"members need a threshold for {type(rule).__name__} (it uses their decisions): {missing}")
+        if isinstance(rule, Weighted) and set(rule.weights) != set(labels):
+            raise ValueError(f"Weighted weights must name exactly the members {labels}, got {sorted(rule.weights)}")
+        super().__init__(categories=dict(guards[0].categories), threshold=rule.threshold(len(guards)), debug=debug)
+        self.guards, self.labels, self.rule = list(guards), labels, rule
         self.concurrency = min(g.concurrency for g in guards)
 
     async def guard(self, context: str) -> GuardResult:
@@ -62,10 +137,9 @@ class EnsembleGuard(Guard):
         categories = []
         for name in self.categories:
             members = {label: res[name] for label, res in zip(self.labels, results)}
-            votes = sum(bool(c.flagged) for c in members.values())
-            categories.append(CategoryResult(name, votes / len(self.guards), {lb: c.score for lb, c in members.items()},
+            categories.append(CategoryResult(name, self.rule.score(members), {lb: c.score for lb, c in members.items()},
                                              members))
-        self._log("{} votes={}", self.rule, {c.name: round(c.score * len(self.guards)) for c in categories})
+        self._log("{}: {}", self.rule, {c.name: round(c.score, 3) for c in categories})
         ranked = sorted(categories, key=lambda c: c.score, reverse=True)
         return GuardResult(ranked=ranked, raw=dict(zip(self.labels, results)), chunks=max(r.chunks for r in results),
                            source=type(self).__name__).at(self.threshold)
