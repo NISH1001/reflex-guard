@@ -1713,6 +1713,9 @@ jev = [
 laya = [
     { name = "laya" },
 ]
+openai = [
+    { name = "httpx" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1733,6 +1736,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", marker = "extra == 'jev'", specifier = ">=0.27" },
+    { name = "httpx", marker = "extra == 'openai'", specifier = ">=0.27" },
     { name = "huggingface-hub", marker = "extra == 'gliner'", specifier = ">=0.25" },
     { name = "laya", marker = "extra == 'laya'", specifier = ">=0.3.10" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -1740,7 +1744,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'gliner'", specifier = ">=1.20" },
     { name = "tokenizers", marker = "extra == 'gliner'", specifier = ">=0.20" },
 ]
-provides-extras = ["laya", "gliner", "jev"]
+provides-extras = ["laya", "gliner", "jev", "openai"]
 
 [package.metadata.requires-dev]
 dev = [

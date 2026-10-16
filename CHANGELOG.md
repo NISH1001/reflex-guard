@@ -2,7 +2,18 @@
 
 ## 0.1.2
 
-`JevGuard`, and how a long text's chunks become one result.
+`JevGuard`, `OpenAIDecisionGuard`, an async-first interface, and how a long text's chunks become one result.
+
+- **Breaking: `guard()` is now async** (it was `aguard()`); the sync wrapper is `guard_sync()`. New
+  `guard_many(texts, concurrency=None)` checks many texts concurrently, in input order. Its default is 2 for local
+  models (Laya, GLiNER), whose model calls are serialized, and 5 for API guards. API guards are async context
+  managers: `async with JevGuard(...) as g:` shares one connection pool, and `guard_many` does so on its own.
+- **`OpenAIDecisionGuard`** (`pip install 'reflexguard[openai]'`): OpenAI's Decisions API (GPT-6 Luna). `noul` /
+  `choice` / `score` map to `predicate` / `choice` / `score` questions, one request (up to 200 questions; more are
+  split). `via="openrouter"` reaches the same model through OpenRouter, pinned to
+  `openai/gpt-6-luna-decisions-20261006`. `JevGuard` and `OpenAIDecisionGuard` share a `DecisionAPIGuard` base.
+- **Refused questions** (`on_refusal`, API guards): `"flag"` (default) scores a refused question 1.0 and marks it in
+  `raw`, so a refusal never reads as safe; `"ignore"` scores it 0; `"raise"` raises. `usage["refusals"]` counts them.
 
 - **`JevGuard`** (`pip install 'reflexguard[jev]'`): TypeSafe Jev through OpenRouter's Decisions API. Every question
   of every mode goes in one request with the text sent once; `model` defaults to the dated snapshot

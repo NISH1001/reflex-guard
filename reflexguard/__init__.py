@@ -4,7 +4,7 @@ from importlib.metadata import PackageNotFoundError, version
 
 from .chunking import InputTooLong
 from .guard import Guard
-from .impls import GlinerGuard, JevGuard, LayaGuard, VonGuard
+from .impls import GlinerGuard, JevGuard, LayaGuard, OpenAIDecisionGuard, VonGuard
 from .modes import Mode
 from .result import CategoryResult, GuardResult
 
@@ -13,4 +13,4 @@ try:
 except PackageNotFoundError:  # running from a source tree that was never installed
     __version__ = "0.0.0+unknown"
 
-__all__ = ["CategoryResult", "GlinerGuard", "Guard", "GuardResult", "InputTooLong", "JevGuard", "LayaGuard", "Mode", "VonGuard", "__version__"]
+__all__ = ["CategoryResult", "GlinerGuard", "Guard", "GuardResult", "InputTooLong", "JevGuard", "LayaGuard", "Mode", "OpenAIDecisionGuard", "VonGuard", "__version__"]

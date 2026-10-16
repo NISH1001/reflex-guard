@@ -21,6 +21,9 @@ class Guard(Protocol):
     NOUL: ClassVar[Mode] = Mode.NOUL
     CHOICE: ClassVar[Mode] = Mode.CHOICE
     SCORE: ClassVar[Mode] = Mode.SCORE
+    # guard_many's default number of texts in flight. Local models serialize their model calls, so
+    # 2 only overlaps one text's pre/post-processing with another's model call; API guards raise it.
+    concurrency: ClassVar[int] = 2
 
     def __init__(
         self,
@@ -48,7 +51,7 @@ class Guard(Protocol):
         """
         raise NotImplementedError(f"{type(self).__name__} must implement predict(); use e.g. LayaGuard")
 
-    async def aguard(self, context: str) -> GuardResult:
+    async def guard(self, context: str) -> GuardResult:
         if not isinstance(context, str):
             raise TypeError(f"context must be a str, got {type(context).__name__}")
         if not context.strip():
@@ -92,14 +95,27 @@ class Guard(Protocol):
         if self.debug:
             logger.opt(depth=1).debug(f"{type(self).__name__}: {message}", *args)
 
-    def guard(self, context: str) -> GuardResult:
-        """Sync `aguard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""
+    async def guard_many(self, contexts: list[str], concurrency: int | None = None) -> list[GuardResult]:
+        """`guard` over many texts, `concurrency` at a time (default: the guard's); results in input order."""
+        limit = self.concurrency if concurrency is None else concurrency
+        if limit < 1:
+            raise ValueError(f"concurrency must be >= 1, got {limit}")
+        gate = asyncio.Semaphore(limit)
+
+        async def one(context: str) -> GuardResult:
+            async with gate:
+                return await self.guard(context)
+
+        return list(await asyncio.gather(*(one(c) for c in contexts)))
+
+    def guard_sync(self, context: str) -> GuardResult:
+        """Sync `guard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(self.aguard(context))
+            return asyncio.run(self.guard(context))
         with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, self.aguard(context)).result()
+            return pool.submit(asyncio.run, self.guard(context)).result()
 
 
 def _normalize_categories(categories: Categories) -> dict[str, str]:

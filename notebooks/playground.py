@@ -234,7 +234,7 @@ async def _(
         guard = LayaGuard(**_settings, router=_router)
         backend_label = "Laya"
     _t0 = time.perf_counter()
-    res = await guard.aguard(text.value)
+    res = await guard.guard(text.value)
     latency_ms = (time.perf_counter() - _t0) * 1000
     return backend_label, guard, latency_ms, res
 
