@@ -28,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from reflexguard import GlinerGuard, Guard, JevGuard, LayaGuard
+from reflexguard import GlinerGuard, Guard, JevGuard, LayaGuard, OpenAIDecisionGuard
 from reflexguard.modes import with_votes
 from reflexguard.questions import build_questions, mode_score, question_id
 
@@ -96,13 +96,17 @@ def parse(model: str) -> tuple[str, dict[str, int]]:
     return base, options
 
 
-REMOTE = {"jev"}  # API-backed models: prompts are scored concurrently (the scores do not change)
-REMOTE_CONCURRENCY = 16
+REMOTE = {"jev", "openai"}  # API-backed models: prompts are scored concurrently (the scores do not change)
+REMOTE_CONCURRENCY = {"jev": 16, "openai": 8}
+PATIENT = {"retries": 6, "retry_wait": 2.0}  # a long batch should ride out a flaky stretch of the API
 
 
 def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
     if model == "jev":  # the pinned snapshot, JevGuard's default; entries record what actually served
-        return JevGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode])
+        return JevGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode], **PATIENT)
+    if model == "openai":  # OpenAI's own Decisions API (OPENAI_API_KEY); gpt-6-luna has no dated snapshot
+        return OpenAIDecisionGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode],
+                                   **PATIENT)
     if model == "laya":
         if "router" not in shared:
             from laya import Router
@@ -152,7 +156,7 @@ def run(models: list[str], limit: int | None) -> None:
                 if not todo:
                     continue
                 guard = make_guard(model, mode, categories, shared)
-                guard.guard("warm up")
+                guard.guard_sync("warm up")
                 for i, (r, res, ms, extra) in enumerate(score_rows(model, guard, todo), 1):
                     entry = {"key": key(model, mode, categories, r["prompt"]), "model": model, "mode": mode,
                              "id": r["id"], "scores": {c.name: round(c.by_mode[mode], 5) for c in res.ranked},
@@ -171,8 +175,6 @@ def run(models: list[str], limit: int | None) -> None:
                 questions = build_questions(guard.categories, guard.mode.modes())
                 for r in todo:
                     answers = asyncio.run(guard.predict(r["prompt"], questions))
-                    if isinstance(guard, JevGuard):
-                        guard._client = None  # a fresh client per asyncio.run
                     per_chunk = [{m.name: {c: round(mode_score(m, c, a[question_id(m, c)]), 5) for c in categories}
                                   for m in guard.mode.modes()} for a in (answers if isinstance(answers, list) else [answers])]
                     entry = {"key": key(model, PER_CHUNK, categories, r["prompt"]), "model": model, "mode": PER_CHUNK,
@@ -184,32 +186,28 @@ def run(models: list[str], limit: int | None) -> None:
 def score_rows(model: str, guard, rows: list[dict]):
     """Yield (row, result, latency_ms, extra cache fields) for each row, in completion order.
 
-    Local models run one prompt at a time; remote ones run REMOTE_CONCURRENCY at once. Latency is
+    Local models run one prompt at a time; remote ones run REMOTE_CONCURRENCY[model] at once. Latency is
     timed per call either way.
     """
     if model not in REMOTE:
         for r in rows:
             t0 = time.perf_counter()
-            res = guard.guard(r["prompt"])
+            res = guard.guard_sync(r["prompt"])
             yield r, res, (time.perf_counter() - t0) * 1000, {}
         return
 
     async def batch(chunk: list[dict]):
-        import httpx
-
         async def one(limit, r):
             async with limit:
                 t0 = time.perf_counter()
-                res = await guard.aguard(r["prompt"])
-                return r, res, (time.perf_counter() - t0) * 1000, {"served": guard.model}
+                res = await guard.guard(r["prompt"])
+                refused = sum(bool(a.get("refusal")) for c in res.ranked for a in c.raw.values())
+                return r, res, (time.perf_counter() - t0) * 1000, {"served": guard.model, "refusals": refused,
+                                                                   "date": time.strftime("%Y-%m-%d")}
 
-        guard._client = httpx.AsyncClient(timeout=guard.timeout)
-        limit = asyncio.Semaphore(REMOTE_CONCURRENCY)
-        try:
+        limit = asyncio.Semaphore(REMOTE_CONCURRENCY[model])
+        async with guard:  # one connection pool for the batch
             return await asyncio.gather(*(one(limit, r) for r in chunk))
-        finally:
-            await guard._client.aclose()
-            guard._client = None
 
     for i in range(0, len(rows), 64):  # batches, so the cache is written as the run goes
         yield from asyncio.run(batch(rows[i:i + 64]))
@@ -414,7 +412,7 @@ def main() -> None:
     sub.add_parser("report", help="build results.md / results.csv from the cache")
     sub.add_parser("paper", help="paper figures (PDF + PNG, both sets) -> data/eval/figures/paper_*")
     pl = sub.add_parser("plot", help="draw data/eval/figures/*.png from the cache")
-    pl.add_argument("--models", default="laya,gliner:fp32:orders=3,gliner:int8:orders=3,jev",
+    pl.add_argument("--models", default="laya,gliner:fp32:orders=3,gliner:int8:orders=3,jev,openai",
                     help="comma-separated models to draw (default: the four the report compares)")
     args = ap.parse_args()
     if args.cmd == "run":

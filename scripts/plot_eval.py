@@ -2,7 +2,7 @@
 
 One style table, STYLE, gives every model the same colour, hatch and marker in every figure.
 Colours are Okabe–Ito hues in an order validated for colour-vision deficiency (worst adjacent
-CVD ΔE 9.6); hatches and markers repeat the identity for greyscale print, and every bar gets a
+CVD ΔE 9.6, every pair ≥ 7.6 with a hatch as second encoding); hatches and markers repeat the identity for greyscale print, and every bar gets a
 dark edge so the lighter hues keep an outline. Every figure is written as PDF (fonts embedded)
 and PNG.
 """
@@ -27,6 +27,7 @@ STYLE = {
     "gliner:fp32:orders=3": ("GLiNER fp32", "#D55E00", "\\\\\\", "s", "CPU"),
     "gliner:int8:orders=3": ("GLiNER int8", "#0072B2", "xxx", "D", "CPU"),
     "jev": ("Jev 1.14", "#CC79A7", "...", "^", "API"),
+    "openai": ("GPT-6 Luna", "#56B4E9", "---", "v", "API"),
 }
 # The NOUL label-order ablation reuses the precision's colour: fp32 vermillion, int8 blue.
 ABLATION = {
