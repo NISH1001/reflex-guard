@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **`EnsembleGuard(guards, rule="votes", k=None)`**: runs every member concurrently and combines their results per
-  category with a `Rule`: `Votes(k)` (default a majority), `Any()`, `All()`, `Weighted(weights, cutoff)`, or any object
+  category with a `Rule`: `Votes(k)` (default a majority), `AnyOf()`, `AllOf()`, `Weighted(weights, cutoff)`, or any object
   with `score(members) -> float` and `threshold(n) -> float`. Strings `"any"` / `"all"` / `"votes"` are shortcuts.
   `by_mode` holds each member's own score and `raw` each member's result.
 - **`CascadeGuard(guards, uncertain=None)`**: tries members in order. A member that raises passes the text on (a

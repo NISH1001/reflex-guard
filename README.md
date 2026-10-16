@@ -68,20 +68,25 @@ res["violence"].by_mode       # EnsembleGuard: each member's own score
 ```
 
 Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. An ensemble combines its members' results
-per category with a **rule**: `"any"`, `"all"`, `"votes"` (+ `k`) are shortcuts for `Any()`, `All()`, `Votes(k)`, and
-`Weighted({"JevGuard": 2, ...}, cutoff=0.5)` weighs members. The built-ins vote on members' *decisions*, since models
-score on different scales, so every member needs a `threshold`. A rule is any object with two plain methods:
+per category with a **rule**: `AnyOf()`, `AllOf()`, `Votes(k)` (default a majority) and
+`Weighted({"JevGuard": 2, ...}, cutoff=0.5)`, with `"any"`, `"all"`, `"votes"` (+ `k`) as shortcuts. The built-ins vote on members' *decisions*, since models
+score on different scales, so every member needs a `threshold`. A custom rule is any object with two plain
+methods:
 
 ```python
-class LayaMustAgree:
-    def score(self, members):          # {"LayaGuard": CategoryResult, "JevGuard": CategoryResult, ...}
-        laya, *others = members.values()
-        return float(laya.flagged and any(m.flagged for m in others))
+class Quorum:
+    """Flag when at least `fraction` of the members flag."""
 
-    def threshold(self, n):            # the category is flagged when score >= threshold(number of members)
-        return 1.0
+    def __init__(self, fraction):
+        self.fraction = fraction
 
-EnsembleGuard([laya, gliner, jev], rule=LayaMustAgree())
+    def score(self, members):           # {"LayaGuard": CategoryResult, "JevGuard": CategoryResult, ...}
+        return sum(bool(m.flagged) for m in members.values()) / len(members)
+
+    def threshold(self, n):             # flagged when score >= threshold(number of members)
+        return self.fraction
+
+EnsembleGuard([laya, gliner, jev], rule=Quorum(0.6))
 ``` A cascade escalates when a member raises (API error, timeout,
 `InputTooLong`) or, with `uncertain=(lo, hi)`, when any category's score falls in that band; the last member always
 answers.

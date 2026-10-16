@@ -45,14 +45,14 @@ class Votes:
         return k / n
 
 
-class Any(Votes):
+class AnyOf(Votes):
     """Flag when any member flags."""
 
     def threshold(self, n: int) -> float:
         return 1 / n
 
 
-class All(Votes):
+class AllOf(Votes):
     """Flag only when every member flags."""
 
     def threshold(self, n: int) -> float:
@@ -77,7 +77,7 @@ class Weighted:
         return self.cutoff
 
 
-RULES = {"any": Any, "all": All, "votes": Votes}
+RULES = {"any": AnyOf, "all": AllOf, "votes": Votes}
 
 
 def _labels(guards: Sequence[Guard]) -> list[str]:
@@ -103,7 +103,7 @@ def _check(guards: Sequence[Guard], kind: str) -> None:
 class EnsembleGuard(Guard):
     """Run every member concurrently and combine their results per category with a `Rule`.
 
-    `rule` is a Rule (Votes(k), Any(), All(), Weighted(...), or your own object with `score` and
+    `rule` is a Rule (Votes(k), AnyOf(), AllOf(), Weighted(...), or your own object with `score` and
     `threshold`) or a shortcut: "any", "all", "votes" (with `k`, default a majority). The built-in
     rules vote on members' decisions, since models score on different scales, so members need a
     `threshold`. `by_mode` holds each member's own score, `raw` each member's CategoryResult, and

@@ -138,14 +138,14 @@ async def test_composites_nest():
 
 
 # ── rules ──────────────────────────────────────────────────────────────────
-from reflexguard.compose import All, Any, Rule, Votes, Weighted  # noqa: E402
+from reflexguard.compose import AllOf, AnyOf, Rule, Votes, Weighted  # noqa: E402
 
 
 def three():
     return [Fixed({"violence": 0.9, "pii": 0.1}), Fixed({"violence": 0.8, "pii": 0.2}), Fixed({"violence": 0.1, "pii": 0.7})]
 
 
-@pytest.mark.parametrize("rule, flagged", [(Any(), {"violence", "pii"}), (All(), set()), (Votes(2), {"violence"}),
+@pytest.mark.parametrize("rule, flagged", [(AnyOf(), {"violence", "pii"}), (AllOf(), set()), (Votes(2), {"violence"}),
                                            (Votes(), {"violence"})])
 async def test_built_in_rules_match_the_string_shortcuts(rule, flagged):
     res = await EnsembleGuard(three(), rule=rule).guard("x")
@@ -180,6 +180,6 @@ def test_rule_validation():
     with pytest.raises(ValueError, match="k"):
         EnsembleGuard(three(), rule=Votes(4))
     with pytest.raises(ValueError, match="k only applies"):
-        EnsembleGuard(three(), rule=Any(), k=2)
+        EnsembleGuard(three(), rule=AnyOf(), k=2)
     with pytest.raises(ValueError, match="weights"):
         EnsembleGuard(three(), rule=Weighted({"Fixed": 1}))
