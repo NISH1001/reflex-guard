@@ -28,7 +28,7 @@ import sys
 import time
 from pathlib import Path
 
-from reflexguard import GlinerGuard, Guard, LayaGuard
+from reflexguard import GlinerGuard, Guard, JevGuard, LayaGuard
 from reflexguard.modes import with_votes
 from reflexguard.questions import build_questions, mode_score, question_id
 
@@ -96,7 +96,13 @@ def parse(model: str) -> tuple[str, dict[str, int]]:
     return base, options
 
 
+REMOTE = {"jev"}  # API-backed models: prompts are scored concurrently (the scores do not change)
+REMOTE_CONCURRENCY = 16
+
+
 def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
+    if model == "jev":  # the pinned snapshot, JevGuard's default; entries record what actually served
+        return JevGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode])
     if model == "laya":
         if "router" not in shared:
             from laya import Router
@@ -147,13 +153,10 @@ def run(models: list[str], limit: int | None) -> None:
                     continue
                 guard = make_guard(model, mode, categories, shared)
                 guard.guard("warm up")
-                for i, r in enumerate(todo, 1):
-                    t0 = time.perf_counter()
-                    res = guard.guard(r["prompt"])
-                    ms = (time.perf_counter() - t0) * 1000
+                for i, (r, res, ms, extra) in enumerate(score_rows(model, guard, todo), 1):
                     entry = {"key": key(model, mode, categories, r["prompt"]), "model": model, "mode": mode,
                              "id": r["id"], "scores": {c.name: round(c.by_mode[mode], 5) for c in res.ranked},
-                             "latency_ms": round(ms, 1), "chunks": res.chunks}
+                             "latency_ms": round(ms, 1), "chunks": res.chunks} | extra
                     out.write(json.dumps(entry) + "\n")
                     out.flush()
                     cache[entry["key"]] = entry
@@ -168,12 +171,50 @@ def run(models: list[str], limit: int | None) -> None:
                 questions = build_questions(guard.categories, guard.mode.modes())
                 for r in todo:
                     answers = asyncio.run(guard.predict(r["prompt"], questions))
+                    if isinstance(guard, JevGuard):
+                        guard._client = None  # a fresh client per asyncio.run
                     per_chunk = [{m.name: {c: round(mode_score(m, c, a[question_id(m, c)]), 5) for c in categories}
                                   for m in guard.mode.modes()} for a in (answers if isinstance(answers, list) else [answers])]
                     entry = {"key": key(model, PER_CHUNK, categories, r["prompt"]), "model": model, "mode": PER_CHUNK,
                              "id": r["id"], "chunks": per_chunk}
                     out.write(json.dumps(entry) + "\n")
                     out.flush()
+
+
+def score_rows(model: str, guard, rows: list[dict]):
+    """Yield (row, result, latency_ms, extra cache fields) for each row, in completion order.
+
+    Local models run one prompt at a time; remote ones run REMOTE_CONCURRENCY at once. Latency is
+    timed per call either way.
+    """
+    if model not in REMOTE:
+        for r in rows:
+            t0 = time.perf_counter()
+            res = guard.guard(r["prompt"])
+            yield r, res, (time.perf_counter() - t0) * 1000, {}
+        return
+
+    async def batch(chunk: list[dict]):
+        import httpx
+
+        async def one(limit, r):
+            async with limit:
+                t0 = time.perf_counter()
+                res = await guard.aguard(r["prompt"])
+                return r, res, (time.perf_counter() - t0) * 1000, {"served": guard.model}
+
+        guard._client = httpx.AsyncClient(timeout=guard.timeout)
+        limit = asyncio.Semaphore(REMOTE_CONCURRENCY)
+        try:
+            return await asyncio.gather(*(one(limit, r) for r in chunk))
+        finally:
+            await guard._client.aclose()
+            guard._client = None
+
+    for i in range(0, len(rows), 64):  # batches, so the cache is written as the run goes
+        yield from asyncio.run(batch(rows[i:i + 64]))
+    print(f"  {model}: {guard.usage['requests']} requests, {guard.usage['input_tokens']} input tokens, "
+          f"${guard.usage['cost']:.4f}", file=sys.stderr)
 
 
 # ── metrics ─────────────────────────────────────────────────────────────────
@@ -280,7 +321,8 @@ def compute(thresholds: dict[tuple[str, str], float] | None = None,
             results.append({"model": model, "config": config, "threshold": t,
                             "at_05": evaluate(test, categories, scores, lat, config, 0.5),
                             "tuned": evaluate(test, categories, scores, lat, config, t),
-                            "test_scores": [(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in test]})
+                            "test_scores": [(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in test],
+                            "latencies": [sum(lat[m][r["id"]] for m in needs) for r in test]})
     return results, rows, test, categories
 
 
@@ -370,15 +412,26 @@ def main() -> None:
     r.add_argument("--models", required=True, help="comma-separated: laya, gliner:fp32, gliner:int8, gliner:fp16")
     r.add_argument("--limit", type=int, help="only the first N prompts (smoke test)")
     sub.add_parser("report", help="build results.md / results.csv from the cache")
+    sub.add_parser("paper", help="paper figures (PDF + PNG, both sets) -> data/eval/figures/paper_*")
     pl = sub.add_parser("plot", help="draw data/eval/figures/*.png from the cache")
-    pl.add_argument("--models", default="laya,gliner:fp32,gliner:fp32:orders=3,gliner:int8:orders=3",
-                    help="comma-separated models to draw (default: the four the card compares)")
+    pl.add_argument("--models", default="laya,gliner:fp32:orders=3,gliner:int8:orders=3,jev",
+                    help="comma-separated models to draw (default: the four the report compares)")
     args = ap.parse_args()
     if args.cmd == "run":
         use_set(args.set)
         run([m.strip() for m in args.models.split(",") if m.strip()], args.limit)
     elif args.cmd == "report":
         report(args.set)
+    elif args.cmd == "paper":
+        from plot_eval import paper
+
+        sets = {}
+        for name in ("core", "ood"):
+            results, _, test, _ = compute_set(name)
+            nb, nh = sum(r["kind"] == "benign" for r in test), sum(r["kind"] == "hard_negative" for r in test)
+            sets[name] = [r | {"n_benign": nb, "n_hard": nh} for r in results]
+        for path in paper(sets["core"], sets["ood"], SETS["core"] / "figures"):
+            print(f"wrote {path}")
     else:
         from plot_eval import plot
 
