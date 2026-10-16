@@ -38,8 +38,14 @@ class Guard(Protocol):
         resolve_thresholds(threshold, list(self.categories))  # fail fast on a bad threshold
         self.threshold = threshold
 
-    async def predict(self, context: str, questions: dict[str, dict[str, Any]]) -> dict[str, Any]:
-        """Ask the model `questions` about `context`; return answers keyed by question id."""
+    async def predict(
+        self, context: str, questions: dict[str, dict[str, Any]]
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Ask the model `questions` about `context`; return answers keyed by question id.
+
+        A guard that splits long text returns one such dict per chunk. Each category is then
+        judged by its worst chunk, with its modes combined within that chunk.
+        """
         raise NotImplementedError(f"{type(self).__name__} must implement predict(); use e.g. LayaGuard")
 
     async def aguard(self, context: str) -> GuardResult:
@@ -52,19 +58,31 @@ class Guard(Protocol):
         self._log("{} questions for {} categories, mode={!r}", len(questions), len(self.categories), self.mode)
         t0 = time.perf_counter()
         answers = await self.predict(context, questions)
-        self._log("predict took {:.1f} ms", (time.perf_counter() - t0) * 1000)
+        per_chunk = answers if isinstance(answers, list) else [answers]
+        if not per_chunk:
+            raise ValueError("model returned no chunks")
+        self._log("predict took {:.1f} ms over {} chunk(s)", (time.perf_counter() - t0) * 1000, len(per_chunk))
         results = []
         for name in self.categories:
-            by_mode, raw = {}, {}
-            for m in modes:
-                qid = question_id(m, name)
-                if qid not in answers:
-                    raise KeyError(f"model returned no answer for question {qid!r}")
-                raw[qid] = answers[qid]
-                by_mode[m.name] = mode_score(m, name, answers[qid])
-            results.append(CategoryResult(name, self.mode.combine(by_mode), by_mode, raw))
+            # Combine the modes within each chunk, then keep the chunk where the category scores
+            # highest: modes must agree about the same passage, and a category is as bad as its
+            # worst chunk. Different categories may peak in different chunks (multi-label).
+            best = None
+            for i, chunk_answers in enumerate(per_chunk):
+                by_mode, raw = {}, {}
+                for m in modes:
+                    qid = question_id(m, name)
+                    if qid not in chunk_answers:
+                        raise KeyError(f"model returned no answer for question {qid!r}")
+                    raw[qid] = chunk_answers[qid]
+                    by_mode[m.name] = mode_score(m, name, chunk_answers[qid])
+                score = self.mode.combine(by_mode)
+                if best is None or score > best.score:
+                    best = CategoryResult(name, score, by_mode, raw, chunk=i)
+            results.append(best)
         ranked = sorted(results, key=lambda c: c.score, reverse=True)
-        result = GuardResult(ranked=ranked, raw=answers).at(self.threshold)
+        raw = {qid: a for c in ranked for qid, a in c.raw.items()}
+        result = GuardResult(ranked=ranked, raw=raw, chunks=len(per_chunk)).at(self.threshold)
         for c in result.ranked:
             self._log("{} score={:.3f} by_mode={}", c.name, c.score, c.by_mode)
         self._log("flagged={} violations={}", result.flagged, [c.name for c in result.violations or []])

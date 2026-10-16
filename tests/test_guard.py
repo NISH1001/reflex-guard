@@ -156,3 +156,60 @@ def test_version_matches_the_package_metadata():
     import reflexguard
 
     assert reflexguard.__version__ == version("reflexguard") == "0.1.1"
+
+
+class ChunkedGuard(FakeGuard):
+    """Answers one table per chunk, as a guard does for long text."""
+
+    def __init__(self, tables, **kwargs):
+        super().__init__(tables[0], **kwargs)
+        self.tables = tables
+
+    async def predict(self, context, questions):
+        out = []
+        for t in self.tables:
+            self.table = t
+            out.append(await super().predict(context, questions))
+        return out
+
+
+def chunk(**values):
+    """chunk(noul_violence=0.9, ...) -> a full table, 0.0 where not given."""
+    t = dict.fromkeys(TABLE, 0.0)
+    for k, v in values.items():
+        mode, cat = k.split("_", 1)
+        t[(mode, cat)] = v
+    return t
+
+
+async def test_modes_must_agree_within_one_chunk():
+    # noul is high only in chunk 0, choice only in chunk 1: nowhere do both agree
+    g = ChunkedGuard([chunk(noul_violence=0.9, choice_violence=0.1), chunk(noul_violence=0.1, choice_violence=0.9)],
+                     categories=["violence"], mode=N & C)
+    res = await g.aguard("long text")
+    assert res["violence"].score == pytest.approx(0.1)
+    assert res.chunks == 2
+
+
+async def test_the_chunk_that_sets_the_score_supplies_by_mode_and_raw():
+    g = ChunkedGuard([chunk(noul_violence=0.3, choice_violence=0.2), chunk(noul_violence=0.8, choice_violence=0.7)],
+                     categories=["violence"], mode=N | C)
+    res = await g.aguard("long text")
+    v = res["violence"]
+    assert v.chunk == 1
+    assert v.by_mode == pytest.approx({"noul": 0.8, "choice": 0.7})
+    assert v.raw["noul:violence"] == {"noul": 0.8}
+
+
+async def test_categories_are_judged_by_their_own_worst_chunk():
+    # multi-label: violence is in chunk 0, pii in chunk 2, and both are flagged
+    g = ChunkedGuard([chunk(noul_violence=0.9), chunk(), chunk(noul_pii=0.8)], categories=["violence", "pii"],
+                     threshold=0.5)
+    res = await g.aguard("long text")
+    assert {c.name for c in res.violations} == {"violence", "pii"}
+    assert (res["violence"].chunk, res["pii"].chunk) == (0, 2)
+
+
+async def test_one_chunk_keeps_the_old_shape():
+    res = await fake().aguard("hello")
+    assert res.chunks == 1 and res["violence"].chunk == 0

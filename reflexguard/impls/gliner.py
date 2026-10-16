@@ -11,9 +11,9 @@ from typing import Any
 from ..guard import Categories, Guard
 from ..modes import Expr, Mode
 from ..chunking import check_chunks
-from ..questions import SCORE_LEVELS, strongest
+from ..questions import SCORE_LEVELS
 from ..result import Threshold
-from ._gliner_onnx import MARKERS, GlinerOnnx, Task
+from ._gliner_onnx import MARKERS, GlinerOnnx, Request, Task, words
 
 DEFAULT_MODEL = "nishparadox/gliner2.5-decide-onnx"
 PRECISIONS = {"fp32": "model.onnx", "fp16": "model_fp16.onnx", "int8": "model_int8.onnx"}
@@ -81,26 +81,31 @@ class GlinerGuard(Guard):
             if self._runtime is None:
                 self._log("loading {} ({})", self.model, self.precision)
                 self._runtime = load_runtime(self.model, self.precision, self.threads)
-            # Every pass of every mode goes through one batched run: modes never share a prompt,
-            # they only share the batch. A slot is one (question group, chunk) of a mode; NOUL's
-            # label orders fill the same slots, since rotating labels keeps the prompt length.
-            slots, requests = [], []
+            # Every pass (a mode's question group, NOUL once per label order) scores the same text
+            # chunks, cut once to fit next to the longest prompt, so "chunk i" is the same passage
+            # for every mode. All passes go through one batched run.
+            passes = []
             for mode, tasks in self._tasks(questions).items():
                 orders = self.noul_orders if mode == Mode.NOUL.name else 1
                 for k in range(orders):
-                    rotated = [_rotate(t, k, orders) for t in tasks]
-                    planned = []
-                    for group in self._groups(rotated):
-                        chunks = self._runtime.plan(context, group, self.max_tokens, self.overlap, mode)
-                        check_chunks(len(chunks), self.max_chunks, f"the text ({mode})")
-                        planned += chunks
-                    slots += [(mode, i) for i in range(len(planned))]
-                    requests += planned
-                self._log("{}: {} pass(es)", mode, sum(m == mode for m, _ in slots))
-            merged: dict[tuple[str, int], list[dict[str, dict[str, float]]]] = {}
-            for slot, probs in zip(slots, self._runtime.run(requests, self.batch_size)):
-                merged.setdefault(slot, []).append(probs)
-            return strongest([_answers(mode, _mean(per_order)) for (mode, _), per_order in merged.items()])
+                    passes += [(mode, group) for group in self._groups([_rotate(t, k, orders) for t in tasks])]
+            prompts = [self._runtime.prompt(group) for _, group in passes]
+            longest = max(range(len(passes)), key=lambda j: len(prompts[j][0]))
+            chunks = self._runtime.chunks(words(context), len(prompts[longest][0]), self.max_tokens, self.overlap,
+                                          passes[longest][0])
+            check_chunks(len(chunks), self.max_chunks, "the text")
+            self._log("{} pass(es) x {} chunk(s)", len(passes), len(chunks))
+            requests = [Request(p, c, group) for (_, group), p in zip(passes, prompts) for c in chunks]
+            tags = [(mode, i) for mode, _ in passes for i in range(len(chunks))]
+            # (chunk, mode) -> task -> its probabilities in each label order it was asked in
+            asked: dict[tuple[int, str], dict[str, list[dict[str, float]]]] = {}
+            for (mode, i), probs in zip(tags, self._runtime.run(requests, self.batch_size)):
+                for task, p in probs.items():
+                    asked.setdefault((i, mode), {}).setdefault(task, []).append(p)
+            per_chunk: list[dict[str, Any]] = [{} for _ in chunks]
+            for (i, mode), tasks in asked.items():
+                per_chunk[i] |= _answers(mode, {task: _mean(ps) for task, ps in tasks.items()})
+            return per_chunk
 
     def _groups(self, tasks: list[Task]) -> list[list[Task]]:
         """Pack tasks in order into passes whose prompt stays within `prompt_tokens`."""
@@ -146,12 +151,11 @@ def _rotate(task: Task, k: int, orders: int) -> Task:
     return Task(task.name, dict(labels[shift:] + labels[:shift]), task.instruction, task.exclusive)
 
 
-def _mean(per_order: list[dict[str, dict[str, float]]]) -> dict[str, dict[str, float]]:
-    """Average each task's label probabilities over the label orders it was asked in."""
+def _mean(per_order: list[dict[str, float]]) -> dict[str, float]:
+    """A task's label probabilities averaged over the label orders it was asked in."""
     if len(per_order) == 1:
         return per_order[0]
-    return {task: {label: sum(p[task][label] for p in per_order) / len(per_order) for label in labels}
-            for task, labels in per_order[0].items()}
+    return {label: sum(p[label] for p in per_order) / len(per_order) for label in per_order[0]}
 
 
 def _text(name: str) -> str:

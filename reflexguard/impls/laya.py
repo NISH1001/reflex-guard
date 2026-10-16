@@ -10,7 +10,6 @@ from typing import Any
 from ..chunking import check_chunks, windows
 from ..guard import Categories, Guard
 from ..modes import Expr, Mode
-from ..questions import strongest
 from ..result import Threshold
 
 warnings.filterwarnings("ignore", message="laya: this checkpoint ships invalid temperatures")
@@ -62,7 +61,7 @@ class LayaGuard(Guard):
             results = self._router.predict_batch(
                 [{"state": {"text": c}, "questions": questions, "model": model} for c in chunks]
             )
-            return strongest([r["answers"] for r in results])
+            return [r["answers"] for r in results]  # one per chunk; Guard combines them
 
     def _chunks(self, context: str, questions: dict[str, dict[str, Any]]) -> tuple[str, list[str]]:
         """The routed checkpoint, and the text cut into pieces that fit its window."""

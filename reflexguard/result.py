@@ -15,6 +15,7 @@ class CategoryResult:
     by_mode: dict[str, float]
     raw: dict[str, Any] = field(default_factory=dict)
     threshold: float | None = None
+    chunk: int = 0  # which chunk of a long text set this score (by_mode and raw come from it)
 
     @property
     def flagged(self) -> bool | None:
@@ -24,7 +25,8 @@ class CategoryResult:
 @dataclass(frozen=True)
 class GuardResult:
     ranked: list[CategoryResult]
-    raw: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)  # the answers behind each category's score
+    chunks: int = 1  # how many chunks of the text were scored
 
     @property
     def violations(self) -> list[CategoryResult] | None:

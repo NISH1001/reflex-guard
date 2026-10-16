@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any, Iterable
 
-from .modes import MODES, Mode
+from .modes import Mode
 
 SCORE_LEVELS = ["none", "minor", "serious", "severe"]
 
@@ -62,18 +62,3 @@ def mode_score(mode: Mode, category: str, answer: dict[str, Any]) -> float:
         raise ValueError(f"non-finite {mode.name} answer for {category!r}: {value}")
     return min(max(value, 0.0), 1.0)
 
-
-def strongest(per_chunk: list[dict[str, Any]]) -> dict[str, Any]:
-    """For each question id, the answer from the chunk where it scores highest in its own mode.
-
-    Used when a long text is scored in chunks: a category is as bad as its worst chunk.
-    """
-    by_name = {m.name: m for m in MODES}
-    best: dict[str, tuple[float, Any]] = {}
-    for answers in per_chunk:
-        for qid, answer in answers.items():
-            mode, _, category = qid.partition(":")
-            score = mode_score(by_name[mode], category, answer)
-            if qid not in best or score > best[qid][0]:
-                best[qid] = (score, answer)
-    return {qid: answer for qid, (_, answer) in best.items()}

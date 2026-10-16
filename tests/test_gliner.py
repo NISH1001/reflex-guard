@@ -192,7 +192,7 @@ async def test_debug_logs_loading_and_chunks(monkeypatch, logs):
     monkeypatch.setattr("reflexguard.impls.gliner.load_runtime", lambda *a: fake_runtime())
     await GlinerGuard(categories=["violence"], debug=True).aguard("x")
     assert "GlinerGuard: loading nishparadox/gliner2.5-decide-onnx (fp32)" in logs
-    assert "GlinerGuard: noul: 3 pass(es)" in logs  # noul_orders defaults to 3
+    assert "GlinerGuard: 3 pass(es) x 1 chunk(s)" in logs  # noul_orders defaults to 3
 
 
 def test_words_follow_gliner2_splitter():
@@ -288,3 +288,29 @@ async def test_too_many_chunks_raise_input_too_long():
     with pytest.raises(InputTooLong, match="max_chunks=3"):
         await g.aguard(" ".join(["calm"] * 500))
     assert issubclass(InputTooLong, ValueError)
+
+
+async def test_every_mode_scores_the_same_chunks():
+    rt = fake_runtime()
+    g = GlinerGuard(categories=["violence", "pii"], mode=Guard.NOUL | Guard.CHOICE | Guard.SCORE, runtime=rt,
+                    max_tokens=96, noul_orders=1)
+    await g.aguard(" ".join(f"w{i}" for i in range(200)))
+    chunk_sets = {}  # prompt -> the text chunks it was asked over (the text follows [SEP_TEXT])
+    for ids in rt.session.calls:
+        sep = ids.index(rt.ids("[SEP_TEXT]")[0])
+        chunk_sets.setdefault(tuple(ids[:sep]), []).append(tuple(ids[sep + 1:]))
+    assert len(chunk_sets) > 1  # several prompts (noul, choice, score passes)
+    first, *rest = chunk_sets.values()
+    assert len(first) > 1 and all(sorted(c) == sorted(first) for c in rest)
+
+
+def test_overlap_is_counted_in_tokens():
+    tok = CharTokenizer()
+    rt = GlinerOnnx(FakeSession(), tok)
+    task = Task("noul", {"violence": "violence"}, "Which of these does the text involve?", exclusive=False)
+    text = " ".join(f"w{i:02d}" for i in range(80))  # every word is 3 tokens: w, digit, digit
+    chunks = [r.text_ids for r in rt.plan(text, [task], max_tokens=96, overlap=4)]
+    assert len(chunks) > 1
+    for a, b in zip(chunks, chunks[1:]):
+        shared = max(k for k in range(1, len(b) + 1) if a[-k:] == b[:k])
+        assert 4 <= shared < 4 + 3  # at least 4 tokens, rounded up to whole words

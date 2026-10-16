@@ -114,6 +114,7 @@ class GlinerOnnx:
 
     def chunks(self, text_words: list[str], prompt_len: int, max_tokens: int, overlap: int,
                label: str = "task") -> list[list[int]]:
+        """Text token ids in chunks that fit next to a `prompt_len` prompt; chunks share `overlap` tokens."""
         budget = max_tokens - prompt_len
         if budget < 1:
             raise ValueError(
@@ -138,7 +139,12 @@ class GlinerOnnx:
             chunks.append([i for w in word_ids[start:end] for i in w])
             if end >= len(word_ids):
                 return chunks
-            start = max(end - overlap, start + 1)
+            # The next chunk starts early enough to repeat at least `overlap` tokens, in whole words.
+            back, repeated = end, 0
+            while back > start + 1 and repeated < overlap:
+                back -= 1
+                repeated += len(word_ids[back])
+            start = back
 
     def probabilities(self, prompt: tuple[list[int], list[int]], text_ids: list[int],
                       tasks: list[Task]) -> dict[str, dict[str, float]]:
