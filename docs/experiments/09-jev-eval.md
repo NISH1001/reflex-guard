@@ -15,7 +15,7 @@ GLiNER2.5-Decide under the same protocol?
 - Each mode asked in its own request (as for the other models); every combination computed offline from the cached
   per-mode scores; thresholds tuned on the core dev split (best balanced accuracy) and applied unchanged to the test
   split and to the OOD set.
-- Prompts are scored 16 at a time (it is a remote API); latency is timed per call. No prompt exceeded Jev's 30 KB
+- Prompts are scored 16 at a time (it is a remote API); latency is timed per call. No prompt exceeded Jev's 30,000-byte
   chunk size, so nothing was chunked.
 - Jev returns probabilities rounded to two decimals, which creates ties; AUC averages ranks over ties.
 

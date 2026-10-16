@@ -81,11 +81,14 @@ with the text sent once.
   in our evals.
 - **Cost.** `g.usage` tracks requests and input tokens, and cost in USD where the API reports it (OpenRouter does,
   OpenAI's native API does not).
+- **Request size.** `max_chunk_bytes=30_000` bounds a request's text *and* questions together (UTF-8 bytes, ≈7.5k
+  tokens of English), keeping Jev under its ~32,000-byte long-context threshold; longer text is chunked.
 - Jev returns probabilities rounded to two decimals. OpenAI allows 200 questions per request; more are split.
 
 ### Long text
 
-Every guard scores the whole text. Laya reads about 300 tokens at a time, GLiNER 512 minus its prompt and Jev ~32 KB
+Every guard scores the whole text. Laya reads about 300 tokens at a time, GLiNER 512 minus its prompt, and Jev switches to a slower long-context mode
+past about 32,000 bytes (≈8k tokens of English)
 before its long-context mode, so longer text is split into overlapping chunks (by tokens, or UTF-8 bytes for Jev, so
 text without spaces is covered too). Each category combines its modes within each chunk and keeps its
 highest-scoring chunk (`CategoryResult.chunk` says which); different categories can peak in different chunks. Text that would need more than `max_chunks` (default 64) chunks raises `InputTooLong`

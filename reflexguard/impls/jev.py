@@ -14,8 +14,9 @@ DEFAULT_URL = "https://openrouter.ai/api/alpha/decisions"
 class JevGuard(DecisionAPIGuard):
     """Jev answers the guard's typed questions directly: every question of every mode goes in one
     request, with the text sent once. Jev reads 262k tokens but switches to a slower, less
-    accurate long-context mode past ~32 KB of text, so longer text is split into overlapping
-    chunks of at most `max_chunk_bytes`, sent concurrently (`max_concurrency`), and each
+    accurate long-context mode past ~32,000 bytes of text (≈8k tokens), so a request's text and
+    questions together are kept within `max_chunk_bytes` (30,000 by default): longer text is
+    split into overlapping chunks, sent concurrently (`max_concurrency`), and each
     category keeps its highest-scoring chunk. More than `max_chunks` chunks raises
     `InputTooLong`. A pinned (dated) `model` must be the snapshot that answers, or the call
     raises. `usage` accumulates requests, input tokens, cost in USD and refusals; a refused

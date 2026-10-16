@@ -170,3 +170,22 @@ async def test_async_with_shares_one_client_and_guard_many_opens_its_own(monkeyp
     assert made[0].is_closed and g._client is None
     results = await g.guard_many(["c", "d", "e"])
     assert len(results) == 3 and len(made) == 2 and made[1].is_closed  # one pool for the batch, then closed
+
+
+async def test_the_questions_count_against_the_byte_budget():
+    fake = FakeJev()
+    cats = {f"category_{i}": "a description long enough to take some room" for i in range(10)}
+    g = guard(fake, categories=cats, mode=Guard.NOUL | Guard.CHOICE | Guard.SCORE, max_chunk_bytes=9000)
+    await g.guard("calm words " * 2000)
+    for _, body in fake.requests:
+        text_bytes = len(body["state"]["text"].encode())
+        question_bytes = len(json.dumps(body["questions"]).encode())
+        assert text_bytes + question_bytes <= 9000
+    assert len(fake.requests) > 1
+
+
+async def test_questions_that_fill_the_budget_are_an_error():
+    cats = {f"category_{i}": "a description long enough to take some room" for i in range(40)}
+    g = guard(FakeJev(), categories=cats, mode=Guard.NOUL | Guard.CHOICE | Guard.SCORE, max_chunk_bytes=4000)
+    with pytest.raises(ValueError, match="questions alone"):
+        await g.guard("hello")

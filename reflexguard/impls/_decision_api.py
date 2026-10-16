@@ -8,6 +8,7 @@ concurrent requests, retries, snapshot pinning, usage, and a policy for refused 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 from typing import Any
@@ -104,14 +105,20 @@ class DecisionAPIGuard(Guard):
             import httpx
         except ImportError as e:
             raise ImportError(f"{type(self).__name__} needs httpx: pip install 'reflexguard[{self.extra}]'") from e
-        chunks = byte_chunks(context, self.max_chunk_bytes, self.overlap)
+        groups = [questions] if not self.max_questions else [
+            dict(list(questions.items())[i:i + self.max_questions]) for i in range(0, len(questions), self.max_questions)]
+        # max_chunk_bytes bounds the text and the questions of a request together, so a request stays under the
+        # API's size limit however the provider counts it (Jev: ~32,000 bytes before its long-context mode).
+        question_bytes = max(len(json.dumps(group).encode()) for group in groups)
+        budget = self.max_chunk_bytes - question_bytes
+        if budget < 64:
+            raise ValueError(f"the questions alone take {question_bytes} of max_chunk_bytes={self.max_chunk_bytes}, "
+                             "leaving no room for text; use fewer categories or modes, or raise max_chunk_bytes")
+        chunks = byte_chunks(context, budget, self.overlap)
         check_chunks(len(chunks), self.max_chunks, "the text")
         self._log("{} chunk(s), {} questions per request", len(chunks), len(questions))
         client = self._client or httpx.AsyncClient(timeout=self.timeout)
         limit = asyncio.Semaphore(self.max_concurrency)
-        groups = [questions] if not self.max_questions else [
-            dict(list(questions.items())[i:i + self.max_questions]) for i in range(0, len(questions), self.max_questions)]
-
         async def chunk_answers(text: str) -> dict[str, Any]:
             parts = await asyncio.gather(*(self._ask(client, limit, text, group) for group in groups))
             return {qid: a for part in parts for qid, a in part.items()}

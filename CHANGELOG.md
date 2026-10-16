@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1
+
+- `JevGuard` / `OpenAIDecisionGuard`: `max_chunk_bytes` now bounds a request's text **and** questions together, so a
+  request stays under Jev's ~32,000-byte (≈8k-token) long-context threshold however the provider counts it. Questions
+  that leave no room for text raise a clear `ValueError`.
+- Docs: the threshold is bytes, not tokens; `docs/experiments` now covers every experiment (core and OOD benchmarks,
+  Jev, GPT-6 Luna) with an index.
+
 ## 0.2.0
 
 `JevGuard`, `OpenAIDecisionGuard`, an async-first interface, and how a long text's chunks become one result.
