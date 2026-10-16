@@ -19,6 +19,7 @@ the dev split, and reports on the test split -> data/eval/results.md and results
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import hashlib
 import json
@@ -29,6 +30,7 @@ from pathlib import Path
 
 from reflexguard import GlinerGuard, Guard, LayaGuard
 from reflexguard.modes import with_votes
+from reflexguard.questions import build_questions, mode_score, question_id
 
 ROOT = Path(__file__).resolve().parent.parent
 SETS = {"core": ROOT / "data" / "eval", "ood": ROOT / "data" / "eval" / "ood"}
@@ -40,6 +42,11 @@ def use_set(name: str) -> None:
     global DATA, CACHE
     DATA, CACHE = SETS[name], SETS[name] / "cache"
 MODES = {"noul": Guard.NOUL, "choice": Guard.CHOICE, "score": Guard.SCORE}
+# Cache entries for a prompt a guard splits into chunks: every mode's scores in every chunk, from
+# one guard asking all modes (the chunking a multi-mode guard uses), so combinations can combine
+# the modes within each chunk before taking the worst chunk, as Guard does.
+PER_CHUNK = "per_chunk"
+ALL_MODES = Guard.NOUL | Guard.CHOICE | Guard.SCORE
 CONFIGS = {  # name -> (expression over the three modes, modes it needs)
     "noul": (Guard.NOUL, ["noul"]),
     "choice": (Guard.CHOICE, ["choice"]),
@@ -96,7 +103,8 @@ def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
 
             shared["router"] = Router()
             shared["router"].preload(["english"])
-        return LayaGuard(categories=categories, mode=MODES[mode], router=shared["router"])
+        return LayaGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode],
+                         router=shared["router"])
     base, options = parse(model)
     name, _, precision = base.partition(":")
     if name != "gliner":
@@ -107,8 +115,8 @@ def make_guard(model: str, mode: str, categories: dict[str, str], shared: dict):
         shared["runtime"] = load_runtime(precision=precision)
     # Explicit defaults, so a cached "gliner:fp32" keeps meaning what it meant when it was scored.
     kwargs = {"noul_orders": 1} | {OPTIONS[k][0]: v for k, v in options.items()}
-    return GlinerGuard(categories=categories, mode=MODES[mode], precision=precision, runtime=shared["runtime"],
-                       **kwargs)
+    return GlinerGuard(categories=categories, mode=ALL_MODES if mode == PER_CHUNK else MODES[mode],
+                       precision=precision, runtime=shared["runtime"], **kwargs)
 
 
 def run(models: list[str], limit: int | None) -> None:
@@ -145,11 +153,27 @@ def run(models: list[str], limit: int | None) -> None:
                     ms = (time.perf_counter() - t0) * 1000
                     entry = {"key": key(model, mode, categories, r["prompt"]), "model": model, "mode": mode,
                              "id": r["id"], "scores": {c.name: round(c.by_mode[mode], 5) for c in res.ranked},
-                             "latency_ms": round(ms, 1)}
+                             "latency_ms": round(ms, 1), "chunks": res.chunks}
                     out.write(json.dumps(entry) + "\n")
                     out.flush()
+                    cache[entry["key"]] = entry
                     if i % 100 == 0:
                         print(f"  {i}/{len(todo)}", file=sys.stderr)
+            chunked = [r for r in rows if any(cache.get(key(model, m, categories, r["prompt"]), {}).get("chunks", 1) > 1
+                                              for m in MODES)]
+            todo = [r for r in chunked if key(model, PER_CHUNK, categories, r["prompt"]) not in cache]
+            print(f"{model} {PER_CHUNK}: {len(todo)} to score, {len(chunked) - len(todo)} cached", file=sys.stderr)
+            if todo:
+                guard = make_guard(model, PER_CHUNK, categories, shared)
+                questions = build_questions(guard.categories, guard.mode.modes())
+                for r in todo:
+                    answers = asyncio.run(guard.predict(r["prompt"], questions))
+                    per_chunk = [{m.name: {c: round(mode_score(m, c, a[question_id(m, c)]), 5) for c in categories}
+                                  for m in guard.mode.modes()} for a in (answers if isinstance(answers, list) else [answers])]
+                    entry = {"key": key(model, PER_CHUNK, categories, r["prompt"]), "model": model, "mode": PER_CHUNK,
+                             "id": r["id"], "chunks": per_chunk}
+                    out.write(json.dumps(entry) + "\n")
+                    out.flush()
 
 
 # ── metrics ─────────────────────────────────────────────────────────────────
@@ -226,17 +250,26 @@ def compute(thresholds: dict[tuple[str, str], float] | None = None,
         cache = read_cache(model)
         per_mode: dict[str, dict[str, dict[str, float]]] = {m: {} for m in MODES}
         lat: dict[str, dict[str, float]] = {m: {} for m in MODES}
+        per_chunk: dict[str, list[dict[str, dict[str, float]]]] = {}
         for r in rows:
             for m in MODES:
                 e = cache.get(key(model, m, categories, r["prompt"]))
                 if e:
                     per_mode[m][r["id"]], lat[m][r["id"]] = e["scores"], e["latency_ms"]
+            e = cache.get(key(model, PER_CHUNK, categories, r["prompt"]))
+            if e:
+                per_chunk[r["id"]] = e["chunks"]
         for config, (expr, needs) in CONFIGS.items():
             if any(len(per_mode[m]) < len(rows) for m in needs):
                 print(f"skip {model} {config}: not every row is cached", file=sys.stderr)
                 continue
-            scores = {r["id"]: {c: expr.combine({m: per_mode[m][r["id"]][c] for m in needs}) for c in categories}
-                      for r in rows}
+            def combined(r: dict, c: str) -> float:
+                # Several modes on a chunked prompt: combine within each chunk, keep the worst chunk.
+                if len(needs) > 1 and r["id"] in per_chunk:
+                    return max(expr.combine({m: ch[m][c] for m in needs}) for ch in per_chunk[r["id"]])
+                return expr.combine({m: per_mode[m][r["id"]][c] for m in needs})
+
+            scores = {r["id"]: {c: combined(r, c) for c in categories} for r in rows}
             if thresholds is None:
                 t = best_threshold([(max(scores[r["id"]].values()), r["kind"] == "harmful") for r in dev])
             elif (model, config) in thresholds:

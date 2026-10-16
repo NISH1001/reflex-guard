@@ -1,10 +1,11 @@
-"""List (and with --drop, remove) cached eval scores for prompts the 0.1.1 chunking fixes change.
+"""List (and with --drop, remove) cached eval scores for prompts a guard may split into chunks.
 
     uv run python scripts/stale_long_prompts.py          # count
     uv run python scripts/stale_long_prompts.py --drop   # remove them, then `eval.py run` re-scores them
 
-Laya only read its first ~300 tokens before 0.1.1, and GlinerGuard truncated any single "word"
-longer than a chunk (CJK text, base64). Every other cached score is unchanged by the fixes.
+Run after a change to how guards chunk long text (0.1.1: Laya chunks at all, GLiNER splits long
+words; 0.1.2: chunks overlap by tokens, GLiNER's modes share chunks, modes combine per chunk).
+A prompt that fits one chunk is scored the same way throughout, so its cached scores stay.
 """
 
 from __future__ import annotations
@@ -33,9 +34,10 @@ def main() -> None:
         rows = {r["id"]: r["prompt"] for r in csv.DictReader(open(d / "prompts.csv"))}
         laya_long = {i for i, p in rows.items()
                      if len(agent.tok(p, add_special_tokens=False, verbose=False)["input_ids"]) > laya_budget}
-        gliner_long = {i for i, p in rows.items() if any(len(rt.ids(w)) > 200 for w in words(p))}
+        # GLiNER's smallest text budget: 512 tokens minus a prompt of up to prompt_tokens (256).
+        gliner_long = {i for i, p in rows.items() if sum(len(rt.ids(w)) for w in words(p)) > 256}
         print(f"{d.relative_to(ROOT)}: {len(laya_long)} prompts past Laya's window, "
-              f"{len(gliner_long)} with a word > 200 GLiNER tokens")
+              f"{len(gliner_long)} past GLiNER's smallest one")
         for path in sorted((d / "cache").glob("*.jsonl")):
             stale = laya_long if path.stem == "laya" else gliner_long
             lines = path.read_text().splitlines()
