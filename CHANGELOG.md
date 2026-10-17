@@ -2,14 +2,20 @@
 
 ## Unreleased
 
+Guards made of guards.
+
 - **`EnsembleGuard(guards, rule=Votes())`**: runs every member concurrently and combines their results per category
-  with a `Rule`, a `typing.Protocol`: any object with `score(members) -> float` and `threshold(n) -> float`. Built-ins:
+  with an `EnsembleRule`: any object with `score(members) -> float` and `threshold(n) -> float`. Built-ins:
   `Votes(k)` (default a majority), `AnyOf()`, `AllOf()`, `Weighted(weights, cutoff)`.
   `by_mode` holds each member's own score and `raw` each member's result.
-- **`CascadeGuard(guards, uncertain=None)`**: tries members in order. A member that raises passes the text on (a
-  fallback); with `uncertain=(lo, hi)` so does one whose scores land in the band. The last member always answers.
+- **`CascadeGuard(guards, rule=None)`**: tries members in order. A member that raises always passes the text on (a
+  fallback); with an `EscalationRule` (`escalate(result) -> bool`) so does one whose answer the rule doesn't trust.
+  Built-in: `Margin(below, above=below)`, relative to each guard's own threshold. `rule` is one rule or a list with
+  one per handoff. The last member always answers.
+- `reflexguard.rules`: `Rule`, with two protocol kinds `EnsembleRule` and `EscalationRule`; a rule passed to the
+  wrong composite raises `TypeError`.
+- Operators: `|` (an `AnyOf` ensemble), `&` (`AllOf`), `>>` (a cascade without a rule); chains flatten, mixes nest.
 - `GuardResult.source`: the guard that produced a result (a cascade names the member that answered).
-- Guards combine with `|` (an `AnyOf` ensemble) and `&` (`AllOf`); chains flatten (`a | b | c`), mixes nest.
 
 ## 0.2.1
 

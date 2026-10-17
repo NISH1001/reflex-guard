@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Guard, InputTooLong, Rule, Votes, Weighted
+from reflexguard import (AllOf, AnyOf, CascadeGuard, EnsembleGuard, EnsembleRule, EscalationRule, Guard, InputTooLong,
+                         Margin, Rule, Votes, Weighted)
 
 
 class Fixed(Guard):
@@ -58,7 +59,7 @@ def test_ensemble_validates_its_members():
         EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"pii": 0.9})])
     with pytest.raises(ValueError, match="k"):
         EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule=Votes(3))
-    with pytest.raises(TypeError, match="Rule"):
+    with pytest.raises(TypeError, match="EnsembleRule"):
         EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule="votes")
     with pytest.raises(ValueError, match="at least two"):
         EnsembleGuard([Fixed({"violence": 0.9})])
@@ -81,18 +82,31 @@ async def test_cascade_raises_when_every_guard_fails():
         await CascadeGuard([a, b]).guard("x")
 
 
-async def test_cascade_escalates_only_when_unsure():
-    sure = Fixed({"violence": 0.05, "pii": 0.95})
+async def test_cascade_escalates_near_the_first_guards_threshold():
     judge = Fixed({"violence": 0.5, "pii": 0.5})
-    res = await CascadeGuard([sure, judge], uncertain=(0.2, 0.8)).guard("x")
-    assert res.source == "Fixed" and judge.calls == 0  # every score outside the band: the first guard answers
+    sure = Fixed({"violence": 0.05, "pii": 0.95})  # top score 0.95, far above 0.5
+    res = await CascadeGuard([sure, judge], rule=Margin(0.2)).guard("x")
+    assert res.source == "Fixed" and judge.calls == 0
 
-    unsure = Fixed({"violence": 0.45, "pii": 0.95})
-    res = await CascadeGuard([unsure, judge], uncertain=(0.2, 0.8)).guard("x")
-    assert res.source == "Fixed#2" and judge.calls == 1  # one score in the band: escalate
+    unsure = Fixed({"violence": 0.05, "pii": 0.6})  # top score within 0.2 of 0.5
+    res = await CascadeGuard([unsure, judge], rule=Margin(0.2)).guard("x")
+    assert res.source == "Fixed#2" and judge.calls == 1
 
 
-async def test_cascade_without_a_band_never_escalates_a_good_answer():
+@pytest.mark.parametrize("top, escalates", [(0.25, True), (0.15, False), (0.55, True), (0.65, False)])
+async def test_margin_can_be_asymmetric(top, escalates):
+    rule = Margin(0.3, 0.1)  # [0.2, 0.6) around a 0.5 threshold
+    res = await Fixed({"violence": top, "pii": 0.0}).guard("x")
+    assert rule.escalate(res) is escalates
+
+
+async def test_margin_is_relative_to_each_categorys_threshold():
+    g = Fixed({"violence": 0.75, "pii": 0.3}, threshold={"violence": 0.7, "pii": 0.9})
+    res = await g.guard("x")  # violence flagged by 0.05: near its own threshold
+    assert Margin(0.1).escalate(res) and not Margin(0.01).escalate(res)
+
+
+async def test_cascade_without_a_rule_never_escalates_a_good_answer():
     first, second = Fixed({"violence": 0.5}), Fixed({"violence": 0.9})
     res = await CascadeGuard([first, second]).guard("x")
     assert res.source == "Fixed" and second.calls == 0
@@ -100,8 +114,27 @@ async def test_cascade_without_a_band_never_escalates_a_good_answer():
 
 async def test_cascade_last_guard_answers_even_if_unsure():
     a, b = Fixed({"violence": 0.5}), Fixed({"violence": 0.5})
-    res = await CascadeGuard([a, b], uncertain=(0.2, 0.8)).guard("x")
+    res = await CascadeGuard([a, b], rule=Margin(0.2)).guard("x")
     assert res.source == "Fixed#2"
+
+
+async def test_cascade_takes_one_rule_per_handoff():
+    a, b, c = Fixed({"violence": 0.52}), Fixed({"violence": 0.6}), Fixed({"violence": 0.9})
+    res = await CascadeGuard([a, b, c], rule=[Margin(0.05), Margin(0.05)]).guard("x")
+    assert res.source == "Fixed#2" and c.calls == 0  # a escalates (0.02 away), b is sure enough (0.1 away)
+    res = await CascadeGuard([a, b, c], rule=[Margin(0.05), Margin(0.2)]).guard("x")
+    assert res.source == "Fixed#3"
+
+
+async def test_a_custom_escalation_rule():
+    class DoubleCheckFlags:
+        def escalate(self, result):
+            return bool(result.flagged)
+
+    assert isinstance(DoubleCheckFlags(), EscalationRule) and not isinstance(DoubleCheckFlags(), EnsembleRule)
+    a, b = Fixed({"violence": 0.9}), Fixed({"violence": 0.1})
+    res = await CascadeGuard([a, b], rule=DoubleCheckFlags()).guard("x")
+    assert res.source == "Fixed#2" and not res.flagged
 
 
 async def test_cascade_passes_input_too_long_to_the_next_guard():
@@ -114,8 +147,17 @@ async def test_cascade_passes_input_too_long_to_the_next_guard():
 def test_cascade_validates():
     with pytest.raises(ValueError, match="at least two"):
         CascadeGuard([Fixed({"violence": 0.9})])
-    with pytest.raises(ValueError, match="uncertain"):
-        CascadeGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], uncertain=(0.8, 0.2))
+    two = [Fixed({"violence": 0.9}), Fixed({"violence": 0.9})]
+    with pytest.raises(TypeError, match="EscalationRule"):
+        CascadeGuard(two, rule=Votes(2))
+    with pytest.raises(TypeError, match="EnsembleRule"):
+        EnsembleGuard(two, rule=Margin(0.2))
+    with pytest.raises(ValueError, match="per handoff"):
+        CascadeGuard(two + [Fixed({"violence": 0.9})], rule=[Margin(0.2)])
+    with pytest.raises(ValueError, match="threshold"):
+        CascadeGuard([Fixed({"violence": 0.9}, threshold=None), Fixed({"violence": 0.9})], rule=Margin(0.2))
+    with pytest.raises(ValueError, match=">= 0"):
+        Margin(-0.1)
     with pytest.raises(ValueError, match="same categories"):
         CascadeGuard([Fixed({"violence": 0.9}), Fixed({"pii": 0.9})])
 
@@ -160,7 +202,7 @@ async def test_a_custom_rule_is_any_object_with_score_and_threshold():
         def threshold(self, n):
             return 1.0
 
-    assert isinstance(FirstMustAgree(), Rule)
+    assert isinstance(FirstMustAgree(), EnsembleRule)
     res = await EnsembleGuard(three(), rule=FirstMustAgree()).guard("x")
     assert {c.name for c in res.violations} == {"violence"}
 
@@ -203,6 +245,25 @@ def test_operators_reject_non_guards_and_members_without_thresholds():
         a | 3
     with pytest.raises(ValueError, match="threshold"):
         a | Fixed({"violence": 0.9}, threshold=None)
+
+
+def test_rshift_builds_a_cascade_and_chains_flatten():
+    a, b, c = Fixed({"violence": 0.9}), Fixed({"violence": 0.2}), Fixed({"violence": 0.6})
+    g = a >> b >> c
+    assert isinstance(g, CascadeGuard) and g.guards == [a, b, c] and g.rules == [None, None]
+    tuned = CascadeGuard([a, b], rule=Margin(0.2))
+    assert (tuned >> c).guards == [tuned, c]  # a cascade with rules stays whole
+    mixed = a >> (b & c)
+    assert isinstance(mixed.guards[1], EnsembleGuard)
+    with pytest.raises(TypeError):
+        a >> 3
+
+
+def test_built_in_rules_are_rules_of_their_kind():
+    for r in (Votes(2), AnyOf(), AllOf(), Weighted({"a": 1})):
+        assert isinstance(r, Rule) and isinstance(r, EnsembleRule) and not isinstance(r, EscalationRule)
+    assert isinstance(Margin(0.2), Rule) and isinstance(Margin(0.2), EscalationRule)
+    assert not isinstance(Margin(0.2), EnsembleRule)
 
 
 def test_modes_still_combine_with_or():

@@ -117,6 +117,17 @@ class Guard(Protocol):
         """`a & b`: an EnsembleGuard that flags only when every member does (AllOf); chains flatten."""
         return _combine(self, other, any_of=False)
 
+    def __rshift__(self, other: object) -> Guard:
+        """`a >> b`: a CascadeGuard, b only when a fails; chains flatten. Rules go on CascadeGuard(...)."""
+        if not isinstance(other, Guard):
+            return NotImplemented
+        from .compose import CascadeGuard
+
+        def members(g: Guard) -> list[Guard]:  # a >> b >> c is one cascade; one with rules stays whole
+            return list(g.guards) if isinstance(g, CascadeGuard) and not any(g.rules) else [g]
+
+        return CascadeGuard(members(self) + members(other))
+
     def guard_sync(self, context: str) -> GuardResult:
         """Sync `guard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""
         try:
@@ -130,7 +141,8 @@ class Guard(Protocol):
 def _combine(left: Guard, right: object, any_of: bool) -> Guard:
     if not isinstance(right, Guard):
         return NotImplemented
-    from .compose import AllOf, AnyOf, EnsembleGuard  # compose imports this module
+    from .compose import EnsembleGuard  # compose imports this module
+    from .rules import AllOf, AnyOf
 
     rule = AnyOf if any_of else AllOf
 

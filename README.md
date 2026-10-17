@@ -54,35 +54,43 @@ results = await g.guard_many(["hello", "my email is jane@example.com"])   # conc
 ### Combining guards
 
 ```python
-from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Votes, Weighted
+from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Margin, Votes, Weighted
 
 laya, jev, gliner = LayaGuard(categories, threshold=0.5), JevGuard(categories, threshold=0.5), GlinerGuard(categories, threshold=0.5)
 
-g = laya | jev                                               # EnsembleGuard, rule=AnyOf(): either flags
-g = laya & jev                                               # EnsembleGuard, rule=AllOf(): both flag
-g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))       # all run concurrently; flag on 2 of 3
-g = CascadeGuard([laya, jev], uncertain=(0.2, 0.8))          # Laya first; Jev only when a score lands in the band
-g = CascadeGuard([jev, laya])                                 # fallback: Laya answers if Jev errors or times out
+g = laya | jev                                          # EnsembleGuard, rule=AnyOf(): either flags
+g = laya & jev                                          # EnsembleGuard, rule=AllOf(): both flag
+g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))  # all run concurrently; flag on 2 of 3
+
+g = jev >> laya                                         # CascadeGuard: Laya only if Jev errors or times out
+g = CascadeGuard([laya, jev], rule=Margin(0.2))         # Laya first; Jev when Laya's verdict is within 0.2 of its threshold
+g = CascadeGuard([gliner, laya, jev], rule=[Margin(0.05), Margin(0.3, 0.1)])   # one rule per handoff
 
 res = await g.guard(text)
 res.source                    # which guard answered (CascadeGuard) or "EnsembleGuard"
 res["violence"].by_mode       # EnsembleGuard: each member's own score
 ```
 
-Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest. `|` and `&` build ensembles directly:
-`a | b | c` is one `AnyOf` ensemble of three, `a | (b & c)` nests; rules with a parameter (`Votes`, `Weighted`) stay
-explicit.
+Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest: `CascadeGuard([laya, jev & openai],
+rule=Margin(0.2))`. Operators build the rule-free versions: `a | b | c` is one `AnyOf` ensemble, `a >> b >> c` one
+fallback cascade, `a | (b & c)` nests; rules with a parameter stay explicit. `>>` binds tighter than `&` and `|`, so
+write `laya >> (jev & openai)`.
 
-**EnsembleGuard** combines its members' results per category with a **`Rule`**, a `typing.Protocol` with two plain
-methods: `score(members) -> float` and `threshold(n) -> float`; a category is flagged when its score reaches the
-threshold. Built in: `Votes(k)` (the default, `Votes()`, is a majority), `AnyOf()`, `AllOf()` and
-`Weighted({"JevGuard": 2, ...}, cutoff=0.5)`. They vote on members' *decisions*, since models score on different
-scales, so every member needs a `threshold`. Your own rule is any object with the two methods:
+**Rules.** A `Rule` is what a composite guard follows. There are two kinds, both `typing.Protocol`s, so your own rule
+is any object with the right methods:
+
+| kind | used by | methods | built in |
+|---|---|---|---|
+| `EnsembleRule` | `EnsembleGuard(rule=...)` | `score(members) -> float`, `threshold(n) -> float` | `Votes(k)` (default `Votes()`: a majority), `AnyOf()`, `AllOf()`, `Weighted({"JevGuard": 2, ...}, cutoff=0.5)` |
+| `EscalationRule` | `CascadeGuard(rule=...)` | `escalate(result) -> bool` (True: pass the text to the next guard) | `Margin(below, above=below)` |
+
+The built-in ensemble rules vote on members' *decisions*, since models score on different scales, so every member
+needs a `threshold`. `Margin` is measured from each guard's own threshold `t`: `Margin(0.2)` escalates when the verdict
+is within [t − 0.2, t + 0.2), `Margin(0.3, 0.1)` looks harder at near-misses than at near-flags. A cascade always
+passes the text on when a guard raises (API error, timeout, `InputTooLong`), and its last guard always answers.
 
 ```python
-class Quorum:
-    """Flag when at least `fraction` of the members flag."""
-
+class Quorum:                           # an EnsembleRule
     def __init__(self, fraction):
         self.fraction = fraction
 
@@ -92,11 +100,13 @@ class Quorum:
     def threshold(self, n):             # flagged when score >= threshold(number of members)
         return self.fraction
 
-EnsembleGuard([laya, gliner, jev], rule=Quorum(0.6))
-```
+class DoubleCheckFlags:                 # an EscalationRule: the next guard confirms every flag
+    def escalate(self, result):
+        return bool(result.flagged)
 
-**CascadeGuard** escalates to the next member when one raises (API error, timeout, `InputTooLong`) or, with
-`uncertain=(lo, hi)`, when any category's score falls in that band; the last member always answers.
+EnsembleGuard([laya, gliner, jev], rule=Quorum(0.6))
+CascadeGuard([laya, jev], rule=DoubleCheckFlags())
+```
 
 ## Notes
 

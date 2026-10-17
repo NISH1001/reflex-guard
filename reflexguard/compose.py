@@ -3,79 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, replace
-from typing import Mapping, Protocol, Sequence, runtime_checkable
+from dataclasses import replace
+from typing import Sequence
 
 from .guard import Guard
 from .result import CategoryResult, GuardResult
-
-
-# ── ensemble rules ─────────────────────────────────────────────────────────
-@runtime_checkable
-class Rule(Protocol):
-    """How an EnsembleGuard turns its members' results for one category into one score.
-
-    `members` maps each member's label (LayaGuard, JevGuard, JevGuard#2, ...) to its
-    CategoryResult for that category (`.score`, `.flagged`, `.threshold`, `.by_mode`). The
-    category is flagged when `score(members) >= threshold(n)`, n being the number of members.
-    """
-
-    def score(self, members: Mapping[str, CategoryResult]) -> float: ...
-
-    def threshold(self, n: int) -> float: ...
-
-
-def _flag_share(members: Mapping[str, CategoryResult]) -> float:
-    return sum(bool(c.flagged) for c in members.values()) / len(members)
-
-
-@dataclass(frozen=True)
-class Votes:
-    """Flag when at least `k` members flag (default: a majority). Score: the share flagging."""
-
-    k: int | None = None
-
-    def score(self, members: Mapping[str, CategoryResult]) -> float:
-        return _flag_share(members)
-
-    def threshold(self, n: int) -> float:
-        k = n // 2 + 1 if self.k is None else self.k
-        if not 1 <= k <= n:
-            raise ValueError(f"k must be between 1 and {n}, got {k}")
-        return k / n
-
-
-class AnyOf(Votes):
-    """Flag when any member flags."""
-
-    def threshold(self, n: int) -> float:
-        return 1 / n
-
-
-class AllOf(Votes):
-    """Flag only when every member flags."""
-
-    def threshold(self, n: int) -> float:
-        return 1.0
-
-
-@dataclass(frozen=True)
-class Weighted:
-    """Flag when the flagging members carry at least `cutoff` of the total weight."""
-
-    weights: Mapping[str, float]
-    cutoff: float = 0.5
-
-    def score(self, members: Mapping[str, CategoryResult]) -> float:
-        missing = set(members) - set(self.weights)
-        if missing:
-            raise ValueError(f"Weighted weights must name every member; missing {sorted(missing)}")
-        total = sum(self.weights[label] for label in members)
-        return sum(self.weights[label] for label, c in members.items() if c.flagged) / total
-
-    def threshold(self, n: int) -> float:
-        return self.cutoff
-
+from .rules import EnsembleRule, EscalationRule, Margin, Votes, Weighted
 
 
 def _labels(guards: Sequence[Guard]) -> list[str]:
@@ -99,18 +32,18 @@ def _check(guards: Sequence[Guard], kind: str) -> None:
 
 
 class EnsembleGuard(Guard):
-    """Run every member concurrently and combine their results per category with a `Rule`.
+    """Run every member concurrently and combine their results per category with an `EnsembleRule`.
 
-    `rule` is any `Rule`: the built-in `Votes(k)` (default: a majority), `AnyOf()`, `AllOf()`,
+    `rule` is any `EnsembleRule`: the built-in `Votes(k)` (default: a majority), `AnyOf()`, `AllOf()`,
     `Weighted(weights, cutoff)`, or your own object with `score` and `threshold`. The built-in
     rules vote on members' decisions, since models score on different scales, so members need a
     `threshold`. `by_mode` holds each member's own score, `raw` each member's CategoryResult, and
     re-thresholding the result (`res.at(...)`) moves the cut-off on the rule's score.
     """
 
-    def __init__(self, guards: Sequence[Guard], rule: Rule = Votes(), debug: bool = False) -> None:
-        if not isinstance(rule, Rule):
-            raise TypeError(f"rule must be a Rule (an object with score() and threshold()), got {rule!r}")
+    def __init__(self, guards: Sequence[Guard], rule: EnsembleRule = Votes(), debug: bool = False) -> None:
+        if not isinstance(rule, EnsembleRule):
+            raise TypeError(f"EnsembleGuard needs an EnsembleRule (score() and threshold()), got {rule!r}")
         _check(guards, "EnsembleGuard")
         labels = _labels(guards)
         if isinstance(rule, Votes | Weighted):
@@ -137,22 +70,33 @@ class EnsembleGuard(Guard):
 
 
 class CascadeGuard(Guard):
-    """Try members in order; the first one that answers confidently wins.
+    """Try members in order; the first one whose answer stands wins.
 
-    A member that raises (an API error, a timeout, `InputTooLong`) passes the text to the next
-    one, so `CascadeGuard([api_guard, local_guard])` is a fallback. With `uncertain=(lo, hi)` a
-    member also passes it on when any category's score lands in [lo, hi): a cheap guard can
-    answer the clear cases and leave the rest to a stronger one. The last member always answers
-    (or its error propagates). `res.source` names the member that answered.
+    A member that raises (an API error, a timeout, `InputTooLong`) always passes the text to the
+    next one, so `CascadeGuard([api_guard, local_guard])` is a fallback. With an `EscalationRule`
+    a member also passes it on when `rule.escalate(result)` is True: with `Margin(0.2)` a cheap
+    guard answers the clear cases and leaves the ones near its threshold to a stronger one.
+    `rule` is one rule for every handoff or a list with one per handoff (len(guards) - 1). The
+    last member always answers (or its error propagates). `res.source` names the member that
+    answered. `a >> b >> c` builds a cascade without a rule.
     """
 
-    def __init__(self, guards: Sequence[Guard], uncertain: tuple[float, float] | None = None,
+    def __init__(self, guards: Sequence[Guard], rule: EscalationRule | Sequence[EscalationRule] | None = None,
                  debug: bool = False) -> None:
         _check(guards, "CascadeGuard")
-        if uncertain is not None and not 0 <= uncertain[0] < uncertain[1] <= 1:
-            raise ValueError(f"uncertain must be (lo, hi) with 0 <= lo < hi <= 1, got {uncertain!r}")
+        handoffs = len(guards) - 1
+        rules = list(rule) if isinstance(rule, Sequence) else [rule] * handoffs
+        if len(rules) != handoffs:
+            raise ValueError(f"CascadeGuard needs one rule per handoff ({handoffs}), got {len(rules)}")
+        for r in rules:
+            if r is not None and not isinstance(r, EscalationRule):
+                raise TypeError(f"CascadeGuard needs an EscalationRule (escalate()), got {r!r}")
+        labels = _labels(guards)
+        missing = [lb for lb, g, r in zip(labels, guards, rules) if isinstance(r, Margin) and g.threshold is None]
+        if missing:
+            raise ValueError(f"Margin escalates relative to a threshold; these guards have none: {missing}")
         super().__init__(categories=dict(guards[0].categories), debug=debug)
-        self.guards, self.labels, self.uncertain = list(guards), _labels(guards), uncertain
+        self.guards, self.labels, self.rules = list(guards), labels, rules
         self.concurrency = min(g.concurrency for g in guards)
 
     async def guard(self, context: str) -> GuardResult:
@@ -165,8 +109,8 @@ class CascadeGuard(Guard):
                     raise
                 self._log("{} failed ({}: {}); trying the next guard", label, type(e).__name__, e)
                 continue
-            if i < last and self.uncertain and any(self.uncertain[0] <= c.score < self.uncertain[1] for c in res.ranked):
-                self._log("{} is unsure; escalating", label)
+            if i < last and self.rules[i] is not None and self.rules[i].escalate(res):
+                self._log("{}: {} escalates", label, self.rules[i])
                 continue
             return replace(res, source=label)
         raise AssertionError("unreachable")
