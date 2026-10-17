@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **`EnsembleGuard(lazy=True)`**: members run in order (`parallel` at a time, default one) and stop once the
+  rule's verdict is settled for every category; same verdicts as eager, fewer calls. Built-in rules gain
+  `decided(members, n)`; a custom rule without it runs every member (with a warning).
+
 ## 0.3.0
 
 Guards made of guards.

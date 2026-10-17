@@ -62,6 +62,7 @@ g = laya | jev                                          # EnsembleGuard, rule=An
 g = laya & jev                                          # EnsembleGuard, rule=AllOf(): both flag
 g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))  # all run concurrently; flag on 2 of 3
 g = EnsembleGuard([laya, gliner, jev], parallel=2)     # at most 2 members at once per text (default: all)
+g = EnsembleGuard([laya, gliner, jev], rule=Votes(2), lazy=True)   # in order; Jev only if Laya and GLiNER split
 
 g = jev >> laya                                         # CascadeGuard: Laya only if Jev errors or times out
 g = CascadeGuard([laya, jev], rule=Margin(0.2))         # Laya first; Jev when Laya's verdict is within 0.2 of its threshold
@@ -89,6 +90,10 @@ The built-in ensemble rules vote on members' *decisions*, since models score on 
 needs a `threshold`. `Margin` is measured from each guard's own threshold `t`: `Margin(0.2)` escalates when the verdict
 is within [t − 0.2, t + 0.2), `Margin(0.3, 0.1)` looks harder at near-misses than at near-flags. A cascade always
 passes the text on when a guard raises (API error, timeout, `InputTooLong`), and its last guard always answers.
+
+`lazy=True` makes an ensemble run its members in order and stop once the rule's verdict is settled for every
+category, like Python's `and` / `or`: the same verdicts as the eager ensemble, fewer calls, latencies that add up.
+Put the cheap members first. A custom rule supports it with an optional `decided(members, n) -> bool`.
 
 **Which to use** ([experiment 11](docs/experiments/11-ensembles-and-cascades.md), simulated from the eval caches): an
 ensemble cuts false positives (`Votes(2)` over Laya, Jev and GPT-6 Luna: Jev's recall at 3.2% instead of 8.1%

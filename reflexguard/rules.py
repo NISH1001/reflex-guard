@@ -30,6 +30,11 @@ class EnsembleRule(Rule, Protocol):
     `members` maps each member's label (LayaGuard, JevGuard, JevGuard#2, ...) to its
     CategoryResult for that category (`.score`, `.flagged`, `.threshold`, `.by_mode`). The
     category is flagged when `score(members) >= threshold(n)`, n being the number of members.
+
+    Optional, for `EnsembleGuard(lazy=True)`: `decided(members, n) -> bool`, True once the members
+    seen so far settle the verdict whatever the remaining ones say. Then `score` is called on those
+    members only and must still land on the same side of `threshold(n)`. Without it, a lazy
+    ensemble runs every member.
     """
 
     def score(self, members: Mapping[str, CategoryResult]) -> float: ...
@@ -64,6 +69,11 @@ class Votes(EnsembleRule):
             raise ValueError(f"k must be between 1 and {n}, got {k}")
         return k / n
 
+    def decided(self, members: Mapping[str, CategoryResult], n: int) -> bool:
+        k = round(self.threshold(n) * n)
+        flags = sum(bool(c.flagged) for c in members.values())
+        return flags >= k or flags + (n - len(members)) < k
+
 
 class AnyOf(Votes):
     """Flag when any member flags."""
@@ -95,6 +105,12 @@ class Weighted(EnsembleRule):
 
     def threshold(self, n: int) -> float:
         return self.cutoff
+
+    def decided(self, members: Mapping[str, CategoryResult], n: int) -> bool:
+        total = sum(self.weights.values())
+        flagged = sum(self.weights[label] for label, c in members.items() if c.flagged)
+        remaining = sum(w for label, w in self.weights.items() if label not in members)
+        return flagged >= self.cutoff * total or flagged + remaining < self.cutoff * total
 
 
 # ── escalation rules ───────────────────────────────────────────────────────

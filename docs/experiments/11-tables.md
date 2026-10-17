@@ -20,6 +20,17 @@
 | Votes(3): all four | 64.4% | 1.1% | 2.4% | 8/18 | 71.5% | 12.1% | 22.4% | 464 ms |
 | Laya \| GLiNER (local only) | 82.7% | 14.9% | 26.6% | 15/18 | 86.9% | 58.6% | 64.6% | 434 ms |
 
+## Lazy ensembles (`lazy=True`: members in order, stop once settled)
+
+| guard | core recall | core benign FP | core hard-neg FP | twins | OOD recall | OOD benign FP | OOD hard-neg FP | median latency  | called an API (core / OOD) |
+|---|---|---|---|---|---|---|---|---|---|
+| Votes(2): Laya, GLiNER, GPT-6 Luna, eager | 69.2% | 2.1% | 6.5% | 11/18 | 73.8% | 20.2% | 28.9% | 464 ms |
+| Votes(2): Laya, GLiNER, GPT-6 Luna, lazy | 69.2% | 2.1% | 6.5% | 11/18 | 73.8% | 20.2% | 28.9% | 676 ms | 39% / 68% |
+| Votes(2): Laya, GLiNER, Jev, eager | 67.3% | 3.2% | 9.7% | 10/18 | 79.0% | 23.2% | 43.0% | 434 ms |
+| Votes(2): Laya, GLiNER, Jev, lazy | 67.3% | 3.2% | 9.7% | 10/18 | 79.0% | 23.2% | 43.0% | 676 ms | 39% / 68% |
+| (Laya \| GLiNER) & Jev & GPT-6 Luna, eager | 61.5% | 0.0% | 2.4% | 8/18 | 69.4% | 10.1% | 16.8% | 464 ms |
+| (Laya \| GLiNER) & Jev & GPT-6 Luna, lazy | 61.5% | 0.0% | 2.4% | 8/18 | 69.4% | 10.1% | 16.8% | 478 ms | 41% / 76% |
+
 ## Cascades (`Margin(below, above)` around the first guard's own threshold)
 
 | guard | core recall | core benign FP | core hard-neg FP | twins | OOD recall | OOD benign FP | OOD hard-neg FP | median latency  | escalated (core / OOD) |

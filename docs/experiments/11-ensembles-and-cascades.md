@@ -55,6 +55,24 @@ Do guards made of guards beat their best member? Two questions:
   lost. `AnyOf` is the recall end and over-blocks more than either member.
 - Local models alone don't make a good ensemble: `Laya | GLiNER` reaches 82.7% recall but flags 15–60% of benign text.
 
+### Lazy ensembles: the same verdicts, fewer calls
+
+`EnsembleGuard(..., lazy=True)` runs members in order and stops once the rule's verdict is settled for every
+category. Its verdicts equal the eager ensemble's on every prompt; only the calls and latency change. Members are
+ordered local first, so "API calls" is the share of prompts that reached an API member.
+
+| ensemble | core recall | benign FP | hard-neg FP | OOD recall | OOD benign FP | API calls (core / OOD) |
+|---|---|---|---|---|---|---|
+| `Votes(2)`: Laya, GLiNER, GPT-6 Luna | 69.2% | 2.1% | 6.5% | 73.8% | 20.2% | 39% / 68% |
+| `Votes(2)`: Laya, GLiNER, Jev | 67.3% | 3.2% | 9.7% | 79.0% | 23.2% | 39% / 68% |
+| `(Laya \| GLiNER) & Jev & GPT-6 Luna` | 61.5% | **0.0%** | **2.4%** | 69.4% | **10.1%** | 41% / 76% |
+
+- Lazy `Votes(2)` calls the API only when the two local models split on some category; with 8 categories that is
+  39% of core prompts. Calling it only when they split on the overall verdict (harmful or not) would be 21% / 36%,
+  at 73.1% core recall, but that is a different composition: built-in rules vote per category.
+- The lazy AND is the precision end: no core benign false positives, a third fewer API calls on core.
+- Lazy latency adds up (median 676 ms vs 464 ms eager here); lazy trades latency for cost.
+
 ### Cascades: most of the API model's accuracy for half the calls
 
 ![Recall vs share escalated](../../data/eval/figures/paper_cascades.png)
