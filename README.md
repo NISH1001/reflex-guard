@@ -89,6 +89,11 @@ needs a `threshold`. `Margin` is measured from each guard's own threshold `t`: `
 is within [t − 0.2, t + 0.2), `Margin(0.3, 0.1)` looks harder at near-misses than at near-flags. A cascade always
 passes the text on when a guard raises (API error, timeout, `InputTooLong`), and its last guard always answers.
 
+**Which to use** ([experiment 11](docs/experiments/11-ensembles-and-cascades.md), simulated from the eval caches): an
+ensemble cuts false positives (`Votes(2)` over Laya, Jev and GPT-6 Luna: Jev's recall at 3.2% instead of 8.1%
+hard-negative FP); a cascade cuts API calls (`CascadeGuard([laya, jev], rule=Margin(0.2))`: Jev's recall with about
+half the prompts sent to Jev, at more false positives). Tune margins per first guard: GLiNER needs about 0.05, Laya 0.2.
+
 ```python
 class Quorum:                           # an EnsembleRule
     def __init__(self, fraction):
