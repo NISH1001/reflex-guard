@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.1
 
 - **`EnsembleGuard(lazy=True)`**: members run in order (`parallel` at a time, default one) and stop once the
   rule's verdict is settled for every category; same verdicts as eager, fewer calls. Built-in rules gain

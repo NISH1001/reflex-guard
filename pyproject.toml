@@ -1,6 +1,6 @@
 [project]
 name = "reflexguard"
-version = "0.3.0"
+version = "0.3.1"
 description = "Multi-label guardrails on System One decision models (Laya, GLiNER, Von, Jev)"
 readme = "README.md"
 requires-python = ">=3.12"
