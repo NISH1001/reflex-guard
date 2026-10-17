@@ -62,7 +62,7 @@ g = laya | jev                                          # EnsembleGuard, rule=An
 g = laya & jev                                          # EnsembleGuard, rule=AllOf(): both flag
 g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))  # all run concurrently; flag on 2 of 3
 g = EnsembleGuard([laya, gliner, jev], parallel=2)     # at most 2 members at once per text (default: all)
-g = EnsembleGuard([laya, gliner, jev], rule=Votes(2), lazy=True)   # in order; Jev only if Laya and GLiNER split
+g = EnsembleGuard([laya, gliner, jev], rule=Votes(2), lazy=True)   # in order; Jev only if Laya and GLiNER split on some category
 
 g = jev >> laya                                         # CascadeGuard: Laya only if Jev errors or times out
 g = CascadeGuard([laya, jev], rule=Margin(0.2))         # Laya first; Jev when Laya's verdict is within 0.2 of its threshold

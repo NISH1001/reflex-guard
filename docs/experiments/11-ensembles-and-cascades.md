@@ -70,7 +70,7 @@ ordered local first, so "API calls" is the share of prompts that reached an API 
 - Lazy `Votes(2)` calls the API only when the two local models split on some category; with 8 categories that is
   39% of core prompts. Calling it only when they split on the overall verdict (harmful or not) would be 21% / 36%,
   at 73.1% core recall, but that is a different composition: built-in rules vote per category.
-- The lazy AND is the precision end: no core benign false positives, a third fewer API calls on core.
+- The lazy AND is the precision end: no core benign false positives, with 59% fewer API calls on core and 24% fewer on OOD.
 - Lazy latency adds up (median 676 ms vs 464 ms eager here); lazy trades latency for cost.
 
 ### Cascades: most of the API model's accuracy for half the calls
