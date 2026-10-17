@@ -85,7 +85,8 @@ class Guard(Protocol):
             results.append(best)
         ranked = sorted(results, key=lambda c: c.score, reverse=True)
         raw = {qid: a for c in ranked for qid, a in c.raw.items()}
-        result = GuardResult(ranked=ranked, raw=raw, chunks=len(per_chunk)).at(self.threshold)
+        result = GuardResult(ranked=ranked, raw=raw, chunks=len(per_chunk),
+                             source=type(self).__name__).at(self.threshold)
         for c in result.ranked:
             self._log("{} score={:.3f} by_mode={}", c.name, c.score, c.by_mode)
         self._log("flagged={} violations={}", result.flagged, [c.name for c in result.violations or []])
@@ -108,6 +109,25 @@ class Guard(Protocol):
 
         return list(await asyncio.gather(*(one(c) for c in contexts)))
 
+    def __or__(self, other: object) -> Guard:
+        """`a | b`: an EnsembleGuard that flags when any member does (AnyOf); chains flatten."""
+        return _combine(self, other, any_of=True)
+
+    def __and__(self, other: object) -> Guard:
+        """`a & b`: an EnsembleGuard that flags only when every member does (AllOf); chains flatten."""
+        return _combine(self, other, any_of=False)
+
+    def __rshift__(self, other: object) -> Guard:
+        """`a >> b`: a CascadeGuard, b only when a fails; chains flatten. Rules go on CascadeGuard(...)."""
+        if not isinstance(other, Guard):
+            return NotImplemented
+        from .compose import CascadeGuard
+
+        def members(g: Guard) -> list[Guard]:  # a >> b >> c is one cascade; one with rules stays whole
+            return list(g.guards) if isinstance(g, CascadeGuard) and not any(g.rules) else [g]
+
+        return CascadeGuard(members(self) + members(other))
+
     def guard_sync(self, context: str) -> GuardResult:
         """Sync `guard`. Inside a running event loop (Jupyter, marimo) it runs on a worker thread."""
         try:
@@ -116,6 +136,20 @@ class Guard(Protocol):
             return asyncio.run(self.guard(context))
         with ThreadPoolExecutor(max_workers=1) as pool:
             return pool.submit(asyncio.run, self.guard(context)).result()
+
+
+def _combine(left: Guard, right: object, any_of: bool) -> Guard:
+    if not isinstance(right, Guard):
+        return NotImplemented
+    from .compose import EnsembleGuard  # compose imports this module
+    from .rules import AllOf, AnyOf
+
+    rule = AnyOf if any_of else AllOf
+
+    def members(g: Guard) -> list[Guard]:  # a | b | c is one ensemble, a | (b & c) nests
+        return list(g.guards) if isinstance(g, EnsembleGuard) and type(g.rule) is rule else [g]
+
+    return EnsembleGuard(members(left) + members(right), rule=rule())
 
 
 def _normalize_categories(categories: Categories) -> dict[str, str]:

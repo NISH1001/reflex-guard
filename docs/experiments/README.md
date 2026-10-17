@@ -16,5 +16,6 @@ results and caveats, and points at the data and figures it came from. Scores are
 | [08](08-long-input.md) | Long input | two truncation bugs fixed; modes combine within each chunk |
 | [09](09-jev-eval.md) | Jev 1.14 | best ranking on both sets; core thresholds over-block on public data |
 | [10](10-openai-decisions-eval.md) | GPT-6 Luna (OpenAI Decisions) | second-best ranking, least over-blocking; refuses some `choice` / `score` questions |
+| [11](11-ensembles-and-cascades.md) | Ensembles and cascades (offline) | `Votes(2)` halves OOD over-blocking; Laya → Jev at `Margin(0.2)` keeps Jev's recall with half the API calls |
 
 Figures for papers: `data/eval/figures/paper_*.{pdf,png}` — one colour, hatch and marker per model throughout.

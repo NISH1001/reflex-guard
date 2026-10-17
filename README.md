@@ -51,6 +51,69 @@ results = await g.guard_many(["hello", "my email is jane@example.com"])   # conc
 | `CHOICE` | `{category, not_category}` | P(category) |
 | `SCORE` | severity: none, minor, serious, severe | expected level / 3 |
 
+### Combining guards
+
+```python
+from reflexguard import AllOf, AnyOf, CascadeGuard, EnsembleGuard, Margin, Votes, Weighted
+
+laya, jev, gliner = LayaGuard(categories, threshold=0.5), JevGuard(categories, threshold=0.5), GlinerGuard(categories, threshold=0.5)
+
+g = laya | jev                                          # EnsembleGuard, rule=AnyOf(): either flags
+g = laya & jev                                          # EnsembleGuard, rule=AllOf(): both flag
+g = EnsembleGuard([laya, gliner, jev], rule=Votes(2))  # all run concurrently; flag on 2 of 3
+g = EnsembleGuard([laya, gliner, jev], parallel=2)     # at most 2 members at once per text (default: all)
+
+g = jev >> laya                                         # CascadeGuard: Laya only if Jev errors or times out
+g = CascadeGuard([laya, jev], rule=Margin(0.2))         # Laya first; Jev when Laya's verdict is within 0.2 of its threshold
+g = CascadeGuard([gliner, laya, jev], rule=[Margin(0.05), Margin(0.3, 0.1)])   # one rule per handoff
+
+res = await g.guard(text)
+res.source                    # which guard answered (CascadeGuard) or "EnsembleGuard"
+res["violence"].by_mode       # EnsembleGuard: each member's own score
+```
+
+Both are ordinary guards (`guard`, `guard_many`, `guard_sync`) and nest: `CascadeGuard([laya, jev & openai],
+rule=Margin(0.2))`. Operators build the rule-free versions: `a | b | c` is one `AnyOf` ensemble, `a >> b >> c` one
+fallback cascade, `a | (b & c)` nests; rules with a parameter stay explicit. `>>` binds tighter than `&` and `|`, so
+write `laya >> (jev & openai)`.
+
+**Rules.** A `Rule` is what a composite guard follows. There are two kinds, both `typing.Protocol`s, so your own rule
+is any object with the right methods:
+
+| kind | used by | methods | built in |
+|---|---|---|---|
+| `EnsembleRule` | `EnsembleGuard(rule=...)` | `score(members) -> float`, `threshold(n) -> float` | `Votes(k)` (default `Votes()`: a majority), `AnyOf()`, `AllOf()`, `Weighted({"JevGuard": 2, ...}, cutoff=0.5)` |
+| `EscalationRule` | `CascadeGuard(rule=...)` | `escalate(result) -> bool` (True: pass the text to the next guard) | `Margin(below, above=below)` |
+
+The built-in ensemble rules vote on members' *decisions*, since models score on different scales, so every member
+needs a `threshold`. `Margin` is measured from each guard's own threshold `t`: `Margin(0.2)` escalates when the verdict
+is within [t − 0.2, t + 0.2), `Margin(0.3, 0.1)` looks harder at near-misses than at near-flags. A cascade always
+passes the text on when a guard raises (API error, timeout, `InputTooLong`), and its last guard always answers.
+
+**Which to use** ([experiment 11](docs/experiments/11-ensembles-and-cascades.md), simulated from the eval caches): an
+ensemble cuts false positives (`Votes(2)` over Laya, Jev and GPT-6 Luna: Jev's recall at 3.2% instead of 8.1%
+hard-negative FP); a cascade cuts API calls (`CascadeGuard([laya, jev], rule=Margin(0.2))`: Jev's recall with about
+half the prompts sent to Jev, at more false positives). Tune margins per first guard: GLiNER needs about 0.05, Laya 0.2.
+
+```python
+class Quorum:                           # an EnsembleRule
+    def __init__(self, fraction):
+        self.fraction = fraction
+
+    def score(self, members):           # {"LayaGuard": CategoryResult, "JevGuard": CategoryResult, ...}
+        return sum(bool(m.flagged) for m in members.values()) / len(members)
+
+    def threshold(self, n):             # flagged when score >= threshold(number of members)
+        return self.fraction
+
+class DoubleCheckFlags:                 # an EscalationRule: the next guard confirms every flag
+    def escalate(self, result):
+        return bool(result.flagged)
+
+EnsembleGuard([laya, gliner, jev], rule=Quorum(0.6))
+CascadeGuard([laya, jev], rule=DoubleCheckFlags())
+```
+
 ## Notes
 
 **All guards.** `guard` is async and `guard_sync` wraps it (it also works inside Jupyter or marimo). `debug=True` logs

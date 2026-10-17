@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Guards made of guards.
+
+- **`EnsembleGuard(guards, rule=Votes())`**: runs every member concurrently and combines their results per category
+  with an `EnsembleRule`: any object with `score(members) -> float` and `threshold(n) -> float`. Built-ins:
+  `Votes(k)` (default a majority), `AnyOf()`, `AllOf()`, `Weighted(weights, cutoff)`.
+  `by_mode` holds each member's own score and `raw` each member's result. `parallel=k` caps members in flight
+  per text (default all; above the member count it warns and runs all).
+- **`CascadeGuard(guards, rule=None)`**: tries members in order. A member that raises always passes the text on (a
+  fallback); with an `EscalationRule` (`escalate(result) -> bool`) so does one whose answer the rule doesn't trust.
+  Built-in: `Margin(below, above=below)`, relative to each guard's own threshold. `rule` is one rule or a list with
+  one per handoff. The last member always answers.
+- `reflexguard.rules`: `Rule`, with two protocol kinds `EnsembleRule` and `EscalationRule`; a rule passed to the
+  wrong composite raises `TypeError`.
+- Operators: `|` (an `AnyOf` ensemble), `&` (`AllOf`), `>>` (a cascade without a rule); chains flatten, mixes nest.
+- `GuardResult.source`: the guard that produced a result (a cascade names the member that answered).
+
 ## 0.2.1
 
 - `JevGuard` / `OpenAIDecisionGuard`: `max_chunk_bytes` now bounds a request's text **and** questions together, so a
