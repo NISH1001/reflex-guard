@@ -68,6 +68,72 @@ def test_ensemble_parallel_bounds():
     assert any("parallel=5" in m for m in seen)
 
 
+async def test_lazy_majority_calls_the_third_member_only_on_a_tie():
+    def members(a, b):
+        return [Fixed({"violence": a}), Fixed({"violence": b}), Fixed({"violence": 0.9})]
+
+    agree = members(0.1, 0.2)
+    res = await EnsembleGuard(agree, rule=Votes(2), lazy=True).guard("x")
+    assert agree[2].calls == 0 and not res.flagged and set(res["violence"].by_mode) == {"Fixed", "Fixed#2"}
+
+    tie = members(0.1, 0.8)
+    res = await EnsembleGuard(tie, rule=Votes(2), lazy=True).guard("x")
+    assert tie[2].calls == 1 and res.flagged
+
+
+async def test_lazy_allof_stops_at_the_first_clear_member():
+    a, b = Fixed({"violence": 0.1, "pii": 0.2}), Fixed({"violence": 0.9, "pii": 0.9})
+    res = await EnsembleGuard([a, b], rule=AllOf(), lazy=True).guard("x")
+    assert b.calls == 0 and not res.flagged
+    a2 = Fixed({"violence": 0.9, "pii": 0.2})  # violence still open: b must run
+    res = await EnsembleGuard([a2, b], rule=AllOf(), lazy=True).guard("x")
+    assert b.calls == 1 and [c.name for c in res.violations] == ["violence"]
+
+
+async def test_lazy_runs_in_order_one_at_a_time_unless_parallel():
+    members = [Fixed({"violence": 0.5 + 0.1 * i}, delay=0.05) for i in range(3)]
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await EnsembleGuard(members, rule=AllOf(), lazy=True).guard("x")
+    assert loop.time() - t0 > 0.14  # sequential, nothing settles early
+    t0 = loop.time()
+    await EnsembleGuard(members, rule=AllOf(), lazy=True, parallel=3).guard("x")
+    assert loop.time() - t0 < 0.1
+
+
+@pytest.mark.parametrize("rule", [AnyOf(), AllOf(), Votes(), Votes(2), Votes(4),
+                                  Weighted({"Fixed": 1, "Fixed#2": 2, "Fixed#3": 1, "Fixed#4": 3}, cutoff=0.4)])
+async def test_lazy_and_eager_reach_the_same_verdicts(rule):
+    import random
+
+    rng = random.Random(0)
+    cats = ["a", "b", "c"]
+    for _ in range(200):
+        scores = [{c: rng.random() for c in cats} for _ in range(4)]
+        eager = await EnsembleGuard([Fixed(s) for s in scores], rule=rule).guard("x")
+        lazy = await EnsembleGuard([Fixed(s) for s in scores], rule=rule, lazy=True).guard("x")
+        assert {c.name for c in lazy.violations} == {c.name for c in eager.violations}
+
+
+def test_lazy_without_decided_warns_and_runs_everything():
+    class NoDecided:
+        def score(self, members):
+            return 0.0
+
+        def threshold(self, n):
+            return 1.0
+
+    from loguru import logger
+
+    seen = []
+    sink = logger.add(seen.append, level="WARNING")
+    try:
+        g = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.9})], rule=NoDecided(), lazy=True)
+    finally:
+        logger.remove(sink)
+    assert not g.lazy and g.parallel == 2 and any("decided" in m for m in seen)
+
+
 async def test_ensemble_works_with_guard_many_and_rethresholding():
     g = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.2})], rule=AllOf())
     results = await g.guard_many(["a", "b", "c"])

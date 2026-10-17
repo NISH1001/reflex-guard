@@ -45,10 +45,16 @@ class EnsembleGuard(Guard):
     `parallel` caps how many members run at once for one text (default: all of them), e.g. to keep
     two local models off the same machine at the same time. It is separate from `concurrency`, the
     number of texts `guard_many` checks at once; the two multiply.
+
+    `lazy=True` runs members in order (`parallel` at a time, default one) and stops once the rule's
+    verdict is settled for every category, like Python's `and` / `or`: the same verdicts, fewer
+    calls, latencies that add up. `Votes(2)` over two local models and an API model calls the API
+    only when the local ones disagree. Scores and `by_mode` then cover the members that ran. Needs a
+    rule with `decided()` (all built-ins have it).
     """
 
     def __init__(self, guards: Sequence[Guard], rule: EnsembleRule = Votes(), parallel: int | None = None,
-                 debug: bool = False) -> None:
+                 lazy: bool = False, debug: bool = False) -> None:
         if not isinstance(rule, EnsembleRule):
             raise TypeError(f"EnsembleGuard needs an EnsembleRule (score() and threshold()), got {rule!r}")
         _check(guards, "EnsembleGuard")
@@ -65,21 +71,41 @@ class EnsembleGuard(Guard):
         if parallel is not None and parallel > len(guards):
             logger.warning("EnsembleGuard: parallel={} but only {} members; running {} at once", parallel,
                            len(guards), len(guards))
-        self.guards, self.labels, self.rule = list(guards), labels, rule
-        self.parallel = len(guards) if parallel is None else min(parallel, len(guards))
+        if lazy and not callable(getattr(rule, "decided", None)):
+            logger.warning("EnsembleGuard: {!r} has no decided(); lazy=True runs every member", rule)
+            lazy = False
+        self.guards, self.labels, self.rule, self.lazy = list(guards), labels, rule, lazy
+        default = 1 if lazy else len(guards)
+        self.parallel = default if parallel is None else min(parallel, len(guards))
         self.concurrency = min(g.concurrency for g in guards)
 
+    async def _run(self, guards: Sequence[Guard], context: str) -> list[GuardResult]:
+        if self.parallel >= len(guards):
+            return list(await asyncio.gather(*(g.guard(context) for g in guards)))
+        slots = asyncio.Semaphore(self.parallel)
+
+        async def run(g: Guard) -> GuardResult:
+            async with slots:
+                return await g.guard(context)
+
+        return list(await asyncio.gather(*(run(g) for g in guards)))
+
+    def _settled(self, results: list[GuardResult]) -> bool:
+        n = len(self.guards)
+        return all(self.rule.decided({lb: r[name] for lb, r in zip(self.labels, results)}, n)  # type: ignore[attr-defined]
+                   for name in self.categories)
+
     async def guard(self, context: str) -> GuardResult:
-        if self.parallel >= len(self.guards):
-            results = await asyncio.gather(*(g.guard(context) for g in self.guards))
+        if not self.lazy:
+            results = await self._run(self.guards, context)
         else:
-            slots = asyncio.Semaphore(self.parallel)
-
-            async def run(g: Guard) -> GuardResult:
-                async with slots:
-                    return await g.guard(context)
-
-            results = await asyncio.gather(*(run(g) for g in self.guards))
+            results = []
+            while len(results) < len(self.guards):
+                wave = self.guards[len(results):len(results) + self.parallel]
+                results += await self._run(wave, context)
+                if len(results) < len(self.guards) and self._settled(results):
+                    self._log("settled after {} of {} members", len(results), len(self.guards))
+                    break
         categories = []
         for name in self.categories:
             members = {label: res[name] for label, res in zip(self.labels, results)}

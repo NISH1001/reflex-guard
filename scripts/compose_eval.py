@@ -94,16 +94,44 @@ def metrics(rows: list[dict], flagged: dict[str, bool], latency: dict[str, float
     return out
 
 
-def ensemble(members: list[dict], k: int, set_name: str) -> dict:
-    """Votes(k) per category over the members' decisions (k=1: AnyOf, k=n: AllOf)."""
-    rows = members[0][set_name]["rows"]
-    flagged, latency = {}, {}
+def ensemble(members: list[dict], k: int, set_name: str, lazy: bool = False, paid: int = 0) -> dict:
+    """Votes(k) per category over the members' decisions (k=1: AnyOf, k=n: AllOf).
+
+    Eager: members run concurrently (latency = the slowest). Lazy: in order, stopping once every
+    category is settled (latencies add); "escalated" is then the share of prompts that ran any
+    member from index `paid` on (the first API member).
+    """
+    rows, n = members[0][set_name]["rows"], len(members)
+    flagged, latency, escalated = {}, {}, {}
     for r in rows:
         i = r["id"]
         cats = members[0][set_name]["scores"][i]
-        flagged[i] = any(sum(m[set_name]["scores"][i][c] >= m["threshold"] for m in members) >= k for c in cats)
-        latency[i] = max(m[set_name]["latency"][i] for m in members)  # members run concurrently
-    return metrics(rows, flagged, latency)
+        votes = [{c: m[set_name]["scores"][i][c] >= m["threshold"] for c in cats} for m in members]
+        ran = n
+        if lazy:
+            for ran in range(1, n + 1):
+                flags = {c: sum(v[c] for v in votes[:ran]) for c in cats}
+                if all(f >= k or f + n - ran < k for f in flags.values()):
+                    break
+        flagged[i] = any(sum(v[c] for v in votes[:ran]) >= k for c in cats)
+        lat = [m[set_name]["latency"][i] for m in members[:ran]]
+        latency[i] = sum(lat) if lazy else max(lat)
+        escalated[i] = ran > paid
+    return metrics(rows, flagged, latency, escalated if lazy else None)
+
+
+def any_of(members: list[dict]) -> dict:
+    """An AnyOf ensemble as one member: scores 1/0 per category, threshold 0.5, latency the slowest."""
+    out = {"threshold": 0.5}
+    for set_name in ("core", "ood"):
+        rows = members[0][set_name]["rows"]
+        out[set_name] = {
+            "rows": rows,
+            "scores": {r["id"]: {c: float(any(m[set_name]["scores"][r["id"]][c] >= m["threshold"] for m in members))
+                                 for c in members[0][set_name]["scores"][r["id"]]} for r in rows},
+            "latency": {r["id"]: max(m[set_name]["latency"][r["id"]] for m in members) for r in rows},
+        }
+    return out
 
 
 def escalates(m: dict, top: float, margin: tuple[float, float]) -> bool:
@@ -164,6 +192,19 @@ def main() -> None:
     for label, keys, k in ens:
         members = [m[x] for x in keys]
         lines.append(row(label, ensemble(members, k, "core"), ensemble(members, k, "ood")))
+
+    local = any_of([m["laya"], m["gliner:fp32:orders=3"]])
+    lazy = [
+        ("Votes(2): Laya, GLiNER, GPT-6 Luna", [m["laya"], m["gliner:fp32:orders=3"], m["openai"]], 2, 2),
+        ("Votes(2): Laya, GLiNER, Jev", [m["laya"], m["gliner:fp32:orders=3"], m["jev"]], 2, 2),
+        ("(Laya \\| GLiNER) & Jev & GPT-6 Luna", [local, m["jev"], m["openai"]], 3, 1),
+    ]
+    lines += ["", "## Lazy ensembles (`lazy=True`: members in order, stop once settled)", "",
+              header[:-1] + " | called an API (core / OOD) |", "|" + "---|" * 10]
+    for label, members, k, paid in lazy:
+        lines.append(row(label + ", eager", ensemble(members, k, "core"), ensemble(members, k, "ood")))
+        lines.append(row(label + ", lazy", ensemble(members, k, "core", lazy=True, paid=paid),
+                         ensemble(members, k, "ood", lazy=True, paid=paid)))
 
     sym = [0.02, 0.05, 0.1, 0.15, 0.2, 0.3]
     asym = [(0.1, 0.02), (0.2, 0.05), (0.3, 0.1)]
