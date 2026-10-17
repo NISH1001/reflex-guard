@@ -44,6 +44,30 @@ async def test_ensemble_members_run_concurrently():
     assert all(m.calls == 1 for m in members)
 
 
+async def test_ensemble_parallel_caps_members_in_flight():
+    members = [Fixed({"violence": 0.9}, delay=0.1) for _ in range(4)]
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    await EnsembleGuard(members, rule=AnyOf(), parallel=2).guard("x")
+    assert 0.18 < loop.time() - t0 < 0.3  # two rounds of two
+
+
+def test_ensemble_parallel_bounds():
+    two = [Fixed({"violence": 0.9}), Fixed({"violence": 0.9})]
+    assert EnsembleGuard(two).parallel == 2
+    with pytest.raises(ValueError, match="parallel"):
+        EnsembleGuard(two, parallel=0)
+    from loguru import logger
+
+    seen = []
+    sink = logger.add(seen.append, level="WARNING")
+    try:
+        assert EnsembleGuard(two, parallel=5).parallel == 2
+    finally:
+        logger.remove(sink)
+    assert any("parallel=5" in m for m in seen)
+
+
 async def test_ensemble_works_with_guard_many_and_rethresholding():
     g = EnsembleGuard([Fixed({"violence": 0.9}), Fixed({"violence": 0.2})], rule=AllOf())
     results = await g.guard_many(["a", "b", "c"])

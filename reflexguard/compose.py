@@ -6,6 +6,8 @@ import asyncio
 from dataclasses import replace
 from typing import Sequence
 
+from loguru import logger
+
 from .guard import Guard
 from .result import CategoryResult, GuardResult
 from .rules import EnsembleRule, EscalationRule, Margin, Votes, Weighted
@@ -39,9 +41,14 @@ class EnsembleGuard(Guard):
     rules vote on members' decisions, since models score on different scales, so members need a
     `threshold`. `by_mode` holds each member's own score, `raw` each member's CategoryResult, and
     re-thresholding the result (`res.at(...)`) moves the cut-off on the rule's score.
+
+    `parallel` caps how many members run at once for one text (default: all of them), e.g. to keep
+    two local models off the same machine at the same time. It is separate from `concurrency`, the
+    number of texts `guard_many` checks at once; the two multiply.
     """
 
-    def __init__(self, guards: Sequence[Guard], rule: EnsembleRule = Votes(), debug: bool = False) -> None:
+    def __init__(self, guards: Sequence[Guard], rule: EnsembleRule = Votes(), parallel: int | None = None,
+                 debug: bool = False) -> None:
         if not isinstance(rule, EnsembleRule):
             raise TypeError(f"EnsembleGuard needs an EnsembleRule (score() and threshold()), got {rule!r}")
         _check(guards, "EnsembleGuard")
@@ -53,11 +60,26 @@ class EnsembleGuard(Guard):
         if isinstance(rule, Weighted) and set(rule.weights) != set(labels):
             raise ValueError(f"Weighted weights must name exactly the members {labels}, got {sorted(rule.weights)}")
         super().__init__(categories=dict(guards[0].categories), threshold=rule.threshold(len(guards)), debug=debug)
+        if parallel is not None and parallel < 1:
+            raise ValueError(f"parallel must be >= 1 or None (all members at once), got {parallel}")
+        if parallel is not None and parallel > len(guards):
+            logger.warning("EnsembleGuard: parallel={} but only {} members; running {} at once", parallel,
+                           len(guards), len(guards))
         self.guards, self.labels, self.rule = list(guards), labels, rule
+        self.parallel = len(guards) if parallel is None else min(parallel, len(guards))
         self.concurrency = min(g.concurrency for g in guards)
 
     async def guard(self, context: str) -> GuardResult:
-        results = await asyncio.gather(*(g.guard(context) for g in self.guards))
+        if self.parallel >= len(self.guards):
+            results = await asyncio.gather(*(g.guard(context) for g in self.guards))
+        else:
+            slots = asyncio.Semaphore(self.parallel)
+
+            async def run(g: Guard) -> GuardResult:
+                async with slots:
+                    return await g.guard(context)
+
+            results = await asyncio.gather(*(run(g) for g in self.guards))
         categories = []
         for name in self.categories:
             members = {label: res[name] for label, res in zip(self.labels, results)}

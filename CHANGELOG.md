@@ -7,7 +7,8 @@ Guards made of guards.
 - **`EnsembleGuard(guards, rule=Votes())`**: runs every member concurrently and combines their results per category
   with an `EnsembleRule`: any object with `score(members) -> float` and `threshold(n) -> float`. Built-ins:
   `Votes(k)` (default a majority), `AnyOf()`, `AllOf()`, `Weighted(weights, cutoff)`.
-  `by_mode` holds each member's own score and `raw` each member's result.
+  `by_mode` holds each member's own score and `raw` each member's result. `parallel=k` caps members in flight
+  per text (default all; above the member count it warns and runs all).
 - **`CascadeGuard(guards, rule=None)`**: tries members in order. A member that raises always passes the text on (a
   fallback); with an `EscalationRule` (`escalate(result) -> bool`) so does one whose answer the rule doesn't trust.
   Built-in: `Margin(below, above=below)`, relative to each guard's own threshold. `rule` is one rule or a list with
